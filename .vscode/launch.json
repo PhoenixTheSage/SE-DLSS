@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to Pulsar Legacy (net48)",
+            "type": "clr",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        },
+        {
+            "name": "Attach to Pulsar Interim (net10)",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        },
+        {
+            "name": "ReSharper: Attach",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:resharper.debugger.pickProcess.coreclr}"
+        }
+    ]
+}

@@ -6,6 +6,7 @@ Requires Python 3.12 or newer.
 
 import os
 import re
+import traceback
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -17,9 +18,16 @@ if sys.platform == "win32":
 
 DRY_RUN = False
 
+# Always operate on the template directory, not the process CWD.
+# Python 3.14's Windows install manager starts double-clicked scripts in
+# C:\Windows\System32, which made this script skip the rename prompt and then
+# crash with PermissionError while writing Directory.Build.props.user.
+ROOT = Path(__file__).resolve().parent
+
 TEMPLATE_NAME = 'ClientPluginTemplate'
 
-PT_PROJECT_NAME = r"^([A-Z][a-z_0-9]+)+$"
+# PascalCase C# identifier: must start with a capital letter.
+PT_PROJECT_NAME = r"^[A-Z][A-Za-z0-9_]*$"
 RX_PROJECT_NAME = re.compile(PT_PROJECT_NAME)
 
 PROJECT_NAMES = (
@@ -32,6 +40,8 @@ USER_PROPS_TEMPLATE = """<Project>
   <PropertyGroup>
     <!-- Folder containing SpaceEngineers.exe (empty = auto-detect) -->
     <Bin64>{bin64}</Bin64>
+    <!-- Folder containing Legacy.exe (empty = auto-detect next to Bin64 or %AppData%\\Pulsar) -->
+    <Pulsar>{pulsar}</Pulsar>
   </PropertyGroup>
 </Project>
 """
@@ -39,6 +49,18 @@ USER_PROPS_TEMPLATE = """<Project>
 
 def _generate_guid() -> str:
     return str(uuid.uuid4())
+
+
+def _read_line(prompt: str) -> str:
+    try:
+        return input(prompt)
+    except EOFError:
+        print()
+        return ""
+
+
+def _pause(message: str = "Done. (Press Enter to exit)") -> None:
+    _read_line(message)
 
 
 def _replace_text_in_file(replacements: dict[str, str], path: str) -> None:
@@ -63,22 +85,27 @@ def _replace_text_in_file(replacements: dict[str, str], path: str) -> None:
 
 
 def _input_plugin_name() -> str:
+    print("Name of the plugin in CapitalizedWords format (C# identifier).")
+    print("Examples: MyCoolPlugin, SeDlss, DlssPlugin")
+    print("Hyphens and spaces are not allowed. Press Enter to skip renaming.")
+
     while True:
-        plugin_name = input("Name of the plugin (in CapitalizedWords format): ")
+        plugin_name = _read_line("Plugin name: ").strip()
         if not plugin_name:
-            break
+            return ""
 
         if RX_PROJECT_NAME.match(plugin_name):
-            break
+            return plugin_name
 
-        print("Invalid plugin name, it must match regexp: " + PT_PROJECT_NAME)
-
-    return plugin_name
+        print(
+            f"Invalid plugin name {plugin_name!r}. "
+            f"It must match {PT_PROJECT_NAME} (e.g. SeDlss, not SE-DLSS)."
+        )
 
 
 def _input_question(prompt: str, default: bool | None = None) -> bool:
     while True:
-        response = input(prompt).lower()
+        response = _read_line(prompt).lower().strip()
 
         if default is not None and len(response) == 0:
             return default
@@ -101,14 +128,15 @@ def _rename_project(name: str) -> None:
     def iter_paths() -> Iterator[Tuple[str, str]]:
         print("Solution:")
         for filename in (f'{TEMPLATE_NAME}.sln', f'{TEMPLATE_NAME}.xml'):
-            if os.path.exists(filename):
-                yield filename, filename
+            path = ROOT / filename
+            if path.exists():
+                yield filename, str(path)
 
         for project_name in PROJECT_NAMES:
             print()
             print(f"{project_name}:")
 
-            for dirpath, _, filenames in os.walk(project_name):
+            for dirpath, _, filenames in os.walk(ROOT / project_name):
                 parts = set(Path(dirpath).parts)
                 if "obj" in parts or "bin" in parts:
                     continue
@@ -135,10 +163,26 @@ def _rename_project(name: str) -> None:
 
 
 def _get_windows_steam_path() -> str | None:
-    reg = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
-    key = winreg.OpenKey(reg, r"SOFTWARE\WOW6432Node\Valve\Steam")
-    (path, _) = winreg.QueryValueEx(key, "InstallPath")
-    return path
+    candidates = (
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "SteamPath"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "InstallPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+    )
+
+    for hive, key_path, value_name in candidates:
+        try:
+            with winreg.OpenKey(hive, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, value_name)
+        except OSError:
+            continue
+
+        if isinstance(value, str):
+            path = value.strip().strip("\x00")
+            if path:
+                return path
+
+    return None
 
 
 def _get_linux_steam_path() -> str | None:
@@ -196,7 +240,9 @@ def _parse_valve_key_values(vdf: str) -> dict[str, object]:
 
         quoted, brace = tokens[index]
         index += 1
-        return decode_value(quoted) if quoted else brace
+        if brace:
+            return brace
+        return decode_value(quoted)
 
     def read_object() -> dict[str, object]:
         result: dict[str, object] = {}
@@ -219,111 +265,180 @@ def _parse_valve_key_values(vdf: str) -> dict[str, object]:
     return read_object()
 
 
+def _read_text(path: Path) -> str:
+    for encoding in ("utf-8-sig", "utf-8"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def _get_install_locations(vdf_path: str, ids: list[str]) -> dict[str, str | None]:
-    with open(vdf_path, "r", encoding="UTF-8") as file:
-        libraryfolders = _parse_valve_key_values(file.read())["libraryfolders"]
+    parsed = _parse_valve_key_values(_read_text(Path(vdf_path)))
+    libraryfolders = parsed.get("libraryfolders")
+    if not isinstance(libraryfolders, dict):
+        raise ValueError(f"Could not parse Steam library folders from {vdf_path}")
 
     game_drives: dict[str, str | None] = {game_id: None for game_id in ids}
-    assert isinstance(libraryfolders, dict)
 
     for folder in libraryfolders.values():
-        assert isinstance(folder, dict)
-        assert isinstance(folder["apps"], dict)
-        assert isinstance(folder["path"], str)
+        if not isinstance(folder, dict):
+            continue
+
+        apps = folder.get("apps")
+        drive = folder.get("path")
+        if not isinstance(apps, dict) or not isinstance(drive, str):
+            continue
 
         for game in ids:
-            if game in folder["apps"]:
-                game_drives[game] = folder["path"]
+            if game in apps:
+                game_drives[game] = drive
 
     game_install: dict[str, str | None] = {}
     for game_id, drive in game_drives.items():
-
         if drive is None:
             game_install[game_id] = None
+            continue
 
-        else:
-            path = Path(drive) / "steamapps" / f"appmanifest_{game_id}.acf"
-            with open(path, "r", encoding="UTF-8") as file:
-                manifest = _parse_valve_key_values(file.read())
+        path = Path(drive) / "steamapps" / f"appmanifest_{game_id}.acf"
+        if not path.is_file():
+            game_install[game_id] = None
+            continue
 
-            app_state = manifest["AppState"]
-            assert isinstance(app_state, dict)
-            install_dir = app_state["installdir"]
-            assert isinstance(install_dir, str)
+        manifest = _parse_valve_key_values(_read_text(path))
+        app_state = manifest.get("AppState")
+        if not isinstance(app_state, dict):
+            game_install[game_id] = None
+            continue
 
-            game_install[game_id] = str(
-                Path(drive) / "steamapps" / "common" / install_dir
-            )
+        install_dir = app_state.get("installdir")
+        if not isinstance(install_dir, str):
+            game_install[game_id] = None
+            continue
+
+        game_install[game_id] = str(Path(drive) / "steamapps" / "common" / install_dir)
 
     return game_install
+
+
+def _user_props_path() -> Path:
+    return ROOT / USER_PROPS
+
+
+def _set_prop(group: ET.Element, name: str, value: str) -> None:
+    element = group.find(name)
+    if element is None:
+        element = ET.SubElement(group, name)
+    element.text = value
+
+
+def _detect_pulsar_dir(game_dir: str) -> str:
+    candidate = Path(game_dir) / "Pulsar"
+    if (candidate / "Legacy.exe").is_file():
+        return str(candidate)
+    return ""
 
 
 def _update_props(
     game_dir: str | None = None,
 ) -> None:
-    """Write the detected Bin64 path into the git-ignored local overrides file."""
+    """Write the detected Bin64/Pulsar paths into the git-ignored local overrides file."""
     if not game_dir:
         return
 
     bin64_dir = str(Path(game_dir) / "Bin64")
+    pulsar_dir = _detect_pulsar_dir(game_dir)
+    props_path = _user_props_path()
 
-    if not os.path.isfile(USER_PROPS):
-        with open(USER_PROPS, "wt", encoding="utf-8") as f:
-            f.write(USER_PROPS_TEMPLATE.format(bin64=bin64_dir))
-        print(f"Created {USER_PROPS}")
+    if not props_path.is_file():
+        props_path.write_text(
+            USER_PROPS_TEMPLATE.format(bin64=bin64_dir, pulsar=pulsar_dir),
+            encoding="utf-8",
+        )
+        print(f"Created {props_path}")
         return
 
     # Keep any other overrides the developer may have added
     parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-    tree = ET.parse(USER_PROPS, parser)
+    tree = ET.parse(props_path, parser)
     root = tree.getroot()
 
     group = root.find("PropertyGroup")
     if group is None:
         group = ET.SubElement(root, "PropertyGroup")
 
-    bin64 = group.find("Bin64")
-    if bin64 is None:
-        bin64 = ET.SubElement(group, "Bin64")
+    _set_prop(group, "Bin64", bin64_dir)
+    if pulsar_dir:
+        _set_prop(group, "Pulsar", pulsar_dir)
 
-    bin64.text = bin64_dir
+    tree.write(props_path)
+    print(f"Updated {props_path}")
 
-    tree.write(USER_PROPS)
-    print(f"Updated {USER_PROPS}")
+
+def _detect_space_engineers() -> str | None:
+    steam_path = _get_steam_path()
+    if steam_path is None:
+        print("Could not find Steam install location.")
+        return None
+
+    vdf_path = Path(steam_path) / "steamapps" / "libraryfolders.vdf"
+    if not vdf_path.is_file():
+        print(f"Could not find Steam library list at {vdf_path}")
+        return None
+
+    locations = _get_install_locations(str(vdf_path), ["244850"])
+    return locations.get("244850")
 
 
 def main() -> None:
     """Run the setup."""
+    os.chdir(ROOT)
 
-    if os.path.isfile("ClientPluginTemplate.sln"):
+    if sys.version_info < (3, 12):
+        print(
+            f"Warning: Python 3.12+ is required, but this is {sys.version.split()[0]}."
+        )
+
+    sln_path = ROOT / f"{TEMPLATE_NAME}.sln"
+    if sln_path.is_file():
         plugin_name = _input_plugin_name()
 
         if plugin_name:
             _rename_project(plugin_name)
         else:
             print("Skipping project rename")
+    else:
+        print(f"Could not find {sln_path.name}; skipping project rename.")
 
     if _input_question("Auto-detect the install location of Space Engineers? (Y/N) [Y]: ", True):
-        steam_path = _get_steam_path()
-        if steam_path is None:
-            print("Could not find Steam install location.")
-            input("Done. (Press any key to exit)")
-            return
+        try:
+            game_dir = _detect_space_engineers()
+        except Exception as exc:
+            print(f"Auto-detect failed: {exc}")
+            traceback.print_exc()
+            game_dir = None
 
-        vdf_path = str(Path(steam_path) / "steamapps" / "libraryfolders.vdf")
-        locations = _get_install_locations(vdf_path, ["244850"])
-
-        if locations["244850"] is not None:
-            print(f"Found Space Engineers under {locations['244850']}")
+        if game_dir:
+            print(f"Found Space Engineers under {game_dir}")
         else:
             print("Could not find Space Engineers install location.")
+            manual = _read_line(
+                "Enter the Space Engineers folder (the one containing Bin64), or press Enter to skip: "
+            ).strip().strip('"')
+            game_dir = manual or None
 
-        _update_props(locations["244850"])
+        _update_props(game_dir)
     else:
-        print(f"Please add the paths manually to '{USER_PROPS}'")
+        print(f"Please add the paths manually to '{_user_props_path()}'")
 
-    input("Done. (Press any key to exit)")
+    _pause()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        _pause("Setup failed. Press Enter to exit.")
+        sys.exit(1)

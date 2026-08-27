@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <RootNamespace>ClientPlugin</RootNamespace>
-    <AssemblyName>ClientPluginTemplate</AssemblyName>
+    <AssemblyName>SpaceEngineersDLSS</AssemblyName>
     <LangVersion>14</LangVersion>
       
     <!-- Target platforms on Windows and Linux -->
@@ -35,6 +35,11 @@
 
     <Bin64Dir>$(Bin64)</Bin64Dir>
     <Bin64Dir Condition=" '$(Bin64Dir)' != '' AND !HasTrailingSlash('$(Bin64Dir)') ">$(Bin64Dir)$(PathSeparator)</Bin64Dir>
+
+    <!-- Pulsar next to the game (Pulsar-Installer) or the classic %AppData%\Pulsar layout -->
+    <_GameRoot Condition=" '$(Pulsar)' == '' AND '$(Bin64)' != '' ">$([System.IO.Path]::GetFullPath('$(Bin64)\..'))</_GameRoot>
+    <Pulsar Condition=" '$(Pulsar)' == '' AND '$(_GameRoot)' != '' AND Exists('$(_GameRoot)\Pulsar\Legacy.exe') ">$(_GameRoot)\Pulsar</Pulsar>
+    <Pulsar Condition=" '$(Pulsar)' == '' AND Exists('$(USERPROFILE)\AppData\Roaming\Pulsar\Legacy.exe') ">$(USERPROFILE)\AppData\Roaming\Pulsar</Pulsar>
 
     <!-- Default configuration if none supplied -->
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -295,10 +300,10 @@
 
   <Target Name="DeployPlugin" AfterTargets="Build" Condition="'$(RunPostBuildEvent)' != 'Never' AND '$(TargetFramework)' != ''">
     <PropertyGroup>
-      <DeploySourceDir>$(MSBuildProjectDirectory)$(PathSeparator)$(OutputPath)</DeploySourceDir>
+      <DeploySourceDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\$(OutputPath)').TrimEnd('\'))</DeploySourceDir>
     </PropertyGroup>
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="call &quot;$(MSBuildProjectDirectory)\Deploy.bat&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot;" />
+          Command="call &quot;$(MSBuildProjectDirectory)\Deploy.bat&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot; &quot;$(Pulsar)&quot;" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
           Command="sh &quot;$(MSBuildProjectDirectory)/Deploy.sh&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot;" />
   </Target>

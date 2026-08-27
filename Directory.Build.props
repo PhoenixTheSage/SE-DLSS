@@ -4,6 +4,9 @@
     <!-- Folder containing SpaceEngineers.exe.
          Leave empty to use the platform-specific auto-detection in ClientPlugin.csproj. -->
     <Bin64></Bin64>
+
+    <!-- Folder containing Legacy.exe (Pulsar). Empty = auto-detect from Bin64 or %AppData%\Pulsar. -->
+    <Pulsar></Pulsar>
   </PropertyGroup>
 
   <!-- Plugin version (committed, shared by all contributors) -->
