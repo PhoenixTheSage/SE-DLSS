@@ -1,16 +1,18 @@
-﻿using System.Reflection;
+﻿using System.IO;
+using System.Reflection;
+using ClientPlugin.Dlss;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Layouts;
 using HarmonyLib;
 using Sandbox.Graphics.GUI;
 using VRage.Plugins;
+using VRage.Utils;
 
-// Define assembly version when compiled by Pulsar
 #if !LOCAL_BUILD
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 #endif
-    
+
 namespace ClientPlugin;
 
 // ReSharper disable once UnusedType.Global
@@ -25,35 +27,35 @@ public class Plugin : IPlugin
     {
         Instance = this;
         Instance.settingsGenerator = new SettingsGenerator();
+        NgxHost.AddSearchPath(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
 
-        // TODO: Put your one time initialization code here.
         var harmony = new Harmony(Name);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
+        MyLog.Default.WriteLine("DLSS plugin initialized");
     }
 
     public void Dispose()
     {
-        // TODO: Save state and close resources here, called when the game exits (not guaranteed!)
-        // IMPORTANT: Do NOT call harmony.UnpatchAll() here! It may break other plugins.
-
+        DlssRuntime.Shutdown();
         Instance = null;
     }
 
     public void Update()
     {
-        // TODO: Put your update code here. It is called on every simulation frame!
     }
 
     // ReSharper disable once UnusedMember.Global
     public void OpenConfigDialog()
     {
+        GameAntiAliasing.AlignConfigWithGame();
         Instance.settingsGenerator.SetLayout<Simple>();
+        Instance.settingsGenerator.Dialog.RecreateControls(true);
         MyGuiSandbox.AddScreen(Instance.settingsGenerator.Dialog);
     }
 
-    //TODO: Uncomment and use this method to load asset files
-    /*public void LoadAssets(string folder)
+    public void LoadAssets(string folder)
     {
-
-    }*/
+        NgxHost.AddSearchPath(folder);
+        MyLog.Default.WriteLine("DLSS asset folder: " + folder);
+    }
 }

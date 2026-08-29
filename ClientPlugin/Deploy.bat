@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Parameters: NAME SOURCE [TFM] [PULSAR_OR_BIN64]
+REM Parameters: NAME SOURCE [TFM] [PULSAR_OR_BIN64] [ASSETS]
 if "%~2" == "" (
     echo error : Deploy.bat missing required parameters
     exit /b 1
@@ -23,6 +23,9 @@ if not exist "%SRCFILE%" (
     echo error : Source not found: %SRCFILE%
     exit /b 1
 )
+
+set "ASSETS=%~5"
+if not "%ASSETS%"=="" if "%ASSETS:~-1%"=="\" set "ASSETS=%ASSETS:~0,-1%"
 
 REM Route by target framework:
 REM   net4x  (.NET Framework) -> Pulsar\Legacy\Local
@@ -77,6 +80,11 @@ copy /y "%SRCFILE%" "!PLUGIN_DIR!\"
 if !ERRORLEVEL! NEQ 0 (
     echo error : Could not copy "%NAME%", make sure the game does not run and try again.
     exit /b 1
+)
+
+if not "%ASSETS%"=="" if exist "%ASSETS%\*.dll" (
+    echo Copying native DLLs from "%ASSETS%" to "!PLUGIN_DIR!\"
+    copy /y "%ASSETS%\*.dll" "!PLUGIN_DIR!\" >nul
 )
 
 exit /b 0

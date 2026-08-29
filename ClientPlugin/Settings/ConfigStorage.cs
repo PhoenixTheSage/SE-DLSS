@@ -28,6 +28,7 @@ public static class ConfigStorage
         }
 
         var xmlSerializer = new XmlSerializer(typeof(Config));
+        Config.SuppressApply = true;
         try
         {
             using (var streamReader = File.OpenText(path))
@@ -37,7 +38,11 @@ public static class ConfigStorage
         {
             MyLog.Default.Warning($"{ConfigFileName}: Failed to read config file: {ConfigFilePath}");
         }
-            
+        finally
+        {
+            Config.SuppressApply = false;
+        }
+
         return Config.Default;
     }
         

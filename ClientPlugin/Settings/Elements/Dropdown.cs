@@ -44,17 +44,23 @@ internal class DropdownAttribute : Attribute, IElement
             dropdown.AddItem(i, UnCamelCase(elements[i]));
         }
 
-        void OnItemSelect()
+        if (choiceEnum == typeof(ClientPlugin.Dlss.AntiAliasingChoice))
         {
-            long key = dropdown.GetSelectedKey();
-            string value = elements[key];
-
-            object enumValue = Enum.Parse(choiceEnum, value);
-            propertySetter(enumValue);
+            ClientPlugin.Dlss.GameAntiAliasing.BindPluginCombo(dropdown);
         }
+        else
+        {
+            void OnItemSelect()
+            {
+                long key = dropdown.GetSelectedKey();
+                string value = elements[key];
+                object enumValue = Enum.Parse(choiceEnum, value);
+                propertySetter(enumValue);
+            }
 
-        dropdown.ItemSelected += OnItemSelect;
-        dropdown.SelectItemByIndex(Convert.ToInt32(selectedEnum));
+            dropdown.ItemSelected += OnItemSelect;
+            dropdown.SelectItemByIndex(Convert.ToInt32(selectedEnum));
+        }
 
         var label = Tools.Tools.GetLabelOrDefault(name, Label);
         return new List<Control>()

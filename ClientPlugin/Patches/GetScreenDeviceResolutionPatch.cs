@@ -1,0 +1,40 @@
+using ClientPlugin.Dlss;
+using HarmonyLib;
+using VRageRender;
+
+namespace ClientPlugin.Patches;
+
+// Keen's DRS Present path P/Invokes PSNative.dll, which is not in the PC Bin64 folder.
+// We no longer enable console DRS, but a leftover cfg flag would still crash Present.
+[HarmonyPatch(typeof(MyRender11), nameof(MyRender11.GetDeviceVSyncMode))]
+internal static class GetDeviceVSyncModePatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(ref int __result)
+    {
+        __result = MyRender11.DeviceSettings.VSync;
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(MyRender11), nameof(MyRender11.GetScreenDeviceResolution))]
+internal static class GetScreenDeviceResolutionPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(out int width, out int height, ref bool __result)
+    {
+        var size = DlssRuntime.OutputResolution();
+        if (size.X <= 0 || size.Y <= 0)
+        {
+            width = 0;
+            height = 0;
+            __result = false;
+            return false;
+        }
+
+        width = size.X;
+        height = size.Y;
+        __result = true;
+        return false;
+    }
+}

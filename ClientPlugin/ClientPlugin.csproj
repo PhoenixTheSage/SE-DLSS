@@ -1,12 +1,21 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project>
+  <!-- VS 17 MSBuild (ReSharper / Build Tools) cannot resolve .NET 10's
+       WorkloadAutoImportPropsLocator. This plugin does not use workloads. -->
+  <PropertyGroup>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <RootNamespace>ClientPlugin</RootNamespace>
     <AssemblyName>SpaceEngineersDLSS</AssemblyName>
     <LangVersion>14</LangVersion>
       
-    <!-- Target platforms on Windows and Linux -->
-    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows'))">net48;net10.0</TargetFrameworks>
+    <!-- Target platforms on Windows and Linux.
+         VS 17 / ReSharper Build Tools MSBuild cannot host .NET 10 SDK tasks, so Full
+         Framework MSBuild builds net48 only. `dotnet build` still builds both. -->
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(MSBuildRuntimeType)' == 'Core'">net48;net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(MSBuildRuntimeType)' != 'Core'">net48</TargetFrameworks>
     <TargetFramework Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net10.0</TargetFramework>
       
     <!-- Ensure SDK generates assembly attributes (no need for AssemblyInfo) -->
@@ -268,29 +277,36 @@
   <ItemGroup>
     <PackageReference Include="Lib.Harmony" Version="2.4.2" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
-    <!-- Uncomment to enable publicizer support  
     <PackageReference Include="Krafs.Publicizer" Version="2.3.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    -->
   </ItemGroup>
 
-  <!-- Uncomment to enable publicizer support
+  <ItemGroup>
+    <Reference Include="SharpDX">
+      <HintPath>$(Bin64Dir)SharpDX.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SharpDX.Direct3D11">
+      <HintPath>$(Bin64Dir)SharpDX.Direct3D11.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="SharpDX.DXGI">
+      <HintPath>$(Bin64Dir)SharpDX.DXGI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
   <PropertyGroup>
     <PublicizerClearCacheOnClean>true</PublicizerClearCacheOnClean>
     <PublicizerRuntimeStrategies>Unsafe;IgnoresAccessChecksTo</PublicizerRuntimeStrategies>
     <PublicizerLogFilePath>$(MSBuildProjectDirectory)\Krafs.Publicizer.$(TargetFramework).log</PublicizerLogFilePath>
   </PropertyGroup>
-  
+
   <ItemGroup>
-    <Publicize Include="Sandbox.Game"/>
-    <Publicize Include="SpaceEngineers.Game"/>
-    <DoNotPublicize Include="Sandbox.Game:Sandbox.Game.Entities.MyEntities.OnEntityAdd"/>
-    <DoNotPublicize Include="Sandbox.Game:Sandbox.Game.Entities.MyEntities.OnEntityRemove"/>
-    <DoNotPublicize Include="Sandbox.Game:Sandbox.Game.Entities.MyCubeGrid.OnStaticChanged"/>
-  </ItemGroup>  
-  -->
+    <Publicize Include="VRage.Render11"/>
+  </ItemGroup>
   <Target Name="VerifyProps" BeforeTargets="BeforeBuild">
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))"
           Command="call &quot;$(RepoRoot)verify_props.bat&quot; &quot;$(Bin64)&quot;" />
@@ -303,8 +319,9 @@
       <DeploySourceDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\$(OutputPath)').TrimEnd('\'))</DeploySourceDir>
     </PropertyGroup>
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))"
-          Command="call &quot;$(MSBuildProjectDirectory)\Deploy.bat&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot; &quot;$(Pulsar)&quot;" />
+          Command="call &quot;$(MSBuildProjectDirectory)\Deploy.bat&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot; &quot;$(Pulsar)&quot; &quot;$(RepoRoot)Assets&quot;" />
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
           Command="sh &quot;$(MSBuildProjectDirectory)/Deploy.sh&quot; &quot;$(AssemblyName).dll&quot; &quot;$(DeploySourceDir)&quot; &quot;$(TargetFramework)&quot;" />
   </Target>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 </Project>

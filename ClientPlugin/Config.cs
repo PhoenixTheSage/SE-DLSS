@@ -1,3 +1,4 @@
+using ClientPlugin.Dlss;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Elements;
 using Sandbox.Graphics.GUI;
@@ -5,113 +6,88 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
-using ClientPlugin.Settings.Tools;
-using VRage.Input;
+using System.Xml.Serialization;
 using VRageMath;
 
-
 namespace ClientPlugin;
-
-public enum ExampleEnum
-{
-    FirstAlpha,
-    SecondBeta,
-    ThirdGamma,
-    AndTheDelta,
-    Epsilon
-}
 
 public class Config : INotifyPropertyChanged
 {
     #region Options
 
-    // TODO: Define your configuration options and their default values
-    private bool toggle = true;
-    private int integer = 2;
-    private float number = 0.1f;
-    private string text = "Default Text";
-    private ExampleEnum dropdown = ExampleEnum.FirstAlpha;
-    private Color color = Color.Cyan;
-    private Color colorWithAlpha = new Color(0.8f, 0.6f, 0.2f, 0.5f);
-    private Binding keybind = new Binding(MyKeys.None);
+    private AntiAliasingChoice antiAliasing = AntiAliasingChoice.Off;
+    private DlssMode mode = DlssMode.Quality;
+    private DlssModel model = DlssModel.LatestRecommended;
+    private float sharpness = 0.5f;
 
     #endregion
 
     #region User interface
 
-    // TODO: Settings dialog title
-    public readonly string Title = "Config Demo";
+    public readonly string Title = "DLSS";
 
-    [Separator("Some settings")]
-        
-    // TODO: Settings dialog controls, one property for each configuration option
+    internal static bool SuppressApply;
 
-    [Checkbox(description: "Checkbox Tooltip")]
-    public bool Toggle
+    [Separator("Anti-aliasing")]
+
+    [Dropdown(visibleRows: 10, label: "Anti-aliasing", description: "DLSS replaces FXAA. Pick Off or FXAA to use the game's anti-aliasing instead.")]
+    public AntiAliasingChoice AntiAliasing
     {
-        get => toggle;
-        set => SetField(ref toggle, value);
+        get => antiAliasing;
+        set => SetField(ref antiAliasing, value);
     }
 
-    [Slider(-1f, 10f, 1f, SliderAttribute.SliderType.Integer, description: "Integer Slider Tooltip")]
-    public int Integer
+    [XmlIgnore]
+    public bool Enabled => antiAliasing == AntiAliasingChoice.DLSS;
+
+    // Old configs stored <Enabled>true</Enabled>. XmlSerializer still calls this setter.
+    [XmlElement("Enabled")]
+    [Browsable(false)]
+    public bool EnabledCompat
     {
-        get => integer;
-        set => SetField(ref integer, value);
+        get => Enabled;
+        set
+        {
+            if (value)
+                AntiAliasing = AntiAliasingChoice.DLSS;
+            else if (antiAliasing == AntiAliasingChoice.DLSS)
+                AntiAliasing = AntiAliasingChoice.Off;
+        }
     }
 
-    [Slider(-5f, 4.5f, 0.5f, SliderAttribute.SliderType.Float, description: "Float Slider Tooltip")]
-    public float Number
+    [Separator("DLSS Super Resolution")]
+
+    [Dropdown(description: "Quality trades internal resolution against image quality. DLAA stays at native resolution.")]
+    public DlssMode Mode
     {
-        get => number;
-        set => SetField(ref number, value);
+        get => mode;
+        set => SetField(ref mode, value);
     }
 
-    [Textbox(description: "Textbox Tooltip")]
-    public string Text
+    [Dropdown(description: "Transformer model used for Super Resolution. NVIDIA App cannot override this unofficial title. Latest Recommended picks K for Quality/Balanced/DLAA, M for Performance, and L for Ultra Performance.")]
+    public DlssModel Model
     {
-        get => text;
-        set => SetField(ref text, value);
+        get => model;
+        set => SetField(ref model, value);
     }
 
-    [Dropdown(description: "Dropdown Tooltip")]
-    public ExampleEnum Dropdown
+    [Slider(0f, 1f, 0.05f, SliderAttribute.SliderType.Float, label: "Sharpness", description: "Optional sharpening. Transformer models may ignore this.")]
+    public float Sharpness
     {
-        get => dropdown;
-        set => SetField(ref dropdown, value);
+        get => sharpness;
+        set => SetField(ref sharpness, value);
     }
 
-    [Separator("More settings")]
-        
-    [Color(description: "RGB color")]
-    public Color Color
-    {
-        get => color;
-        set => SetField(ref color, value);
-    }
+    [Separator("Status")]
 
-    [Color(hasAlpha: true, description: "RGBA color")]
-    public Color ColorWithAlpha
-    {
-        get => colorWithAlpha;
-        set => SetField(ref colorWithAlpha, value);
-    }
-
-    [Keybind(description: "Keybind Tooltip - Unbind by right clicking the button")]
-    public Binding Keybind
-    {
-        get => keybind;
-        set => SetField(ref keybind, value);
-    }
-
-    [Button(description: "Button Tooltip")]
-    public void Button()
+    [Button(label: "Show Status", description: "GPU, NGX, and current internal resolution")]
+    public void ShowStatus()
     {
         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
             MyMessageBoxStyleEnum.Info,
             buttonType: MyMessageBoxButtonsType.OK,
-            messageText: new StringBuilder("You clicked me!"),
-            messageCaption: new StringBuilder("Custom Button Function"),
+            messageText: new StringBuilder(DlssStatus.CurrentText),
+            messageCaption: new StringBuilder("DLSS Status"),
             size: new Vector2(0.6f, 0.5f)
         ));
     }
@@ -128,6 +104,10 @@ public class Config : INotifyPropertyChanged
     protected virtual void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) || propertyName == nameof(Sharpness))
+            DlssRuntime.NotifyConfigChanged();
+        if (propertyName == nameof(AntiAliasing) && !SuppressApply)
+            GameAntiAliasing.ApplyFromConfig();
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)

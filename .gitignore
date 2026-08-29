@@ -366,3 +366,8 @@ MigrationBackup/
 
 # Plugin specific
 *.il
+Assets/nvngx_dlss.dll
+Assets/nvngx_dlssd.dll
+Assets/nvngx_dlssg.dll
+Native/SeDlssNgx/bin/
+Native/SeDlssNgx/obj/
