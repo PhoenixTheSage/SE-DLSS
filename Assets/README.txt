@@ -1,9 +1,8 @@
-Place these files in this folder (or let Pulsar copy them via LoadAssets):
+Pulsar copies this folder and calls Plugin.LoadAssets with its path.
 
 - SeDlssNgx.dll
-  Build Native\SeDlssNgx\SeDlssNgx.vcxproj (x64 Release) or run Native\SeDlssNgx\build.bat.
+  Native wrapper. Build Native\SeDlssNgx\SeDlssNgx.vcxproj (x64 Release) or run Native\SeDlssNgx\build.bat.
 
 - nvngx_dlss.dll
-  Redistributable DLSS Super Resolution library from the NVIDIA DLSS 4.5 SDK
-  (NVIDIA/DLSS on GitHub: lib/Windows_x86_64/rel/nvngx_dlss.dll).
-  Do not commit this binary; NVIDIA requires a release notification before shipping.
+  NVIDIA DLSS Super Resolution redistributable (NVIDIA/DLSS SDK, lib/Windows_x86_64/rel/).
+  Shipped here so Pulsar deploys it with the plugin. Do not vendor NVIDIA SDK headers.
