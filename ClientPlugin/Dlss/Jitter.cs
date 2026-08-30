@@ -1,3 +1,4 @@
+using System;
 using VRageMath;
 using VRageRender;
 
@@ -14,6 +15,10 @@ internal static class Jitter
 
     private static int frameIndex;
     private static bool applied;
+    private static Vector3D previousCameraPos;
+    private static Vector3 previousForward;
+    private static float previousFovV;
+    private static bool hasCameraSample;
     private static Matrix savedProjection;
     private static Matrix savedProjectionForSkybox;
     private static Matrix savedViewProjectionAt0;
@@ -27,6 +32,7 @@ internal static class Jitter
         frameIndex = 0;
         HasPrevious = false;
         applied = false;
+        hasCameraSample = false;
         OffsetX = 0f;
         OffsetY = 0f;
         JitteredInvViewProjection = default(Matrix);
@@ -41,6 +47,30 @@ internal static class Jitter
         OffsetY = Halton(frameIndex, 3) - 0.5f;
         frameIndex++;
         HasPrevious = frameIndex > 1;
+    }
+
+    public static bool ConsumeCameraCut()
+    {
+        var env = MyRender11.Environment != null ? MyRender11.Environment.Matrices : null;
+        if (env == null)
+            return !HasPrevious;
+        var pos = env.CameraPosition;
+        var forward = env.ViewAt0.Forward;
+        var fov = env.FovV;
+        bool cut = !HasPrevious || !hasCameraSample;
+        if (hasCameraSample)
+        {
+            double dist = Vector3D.Distance(pos, previousCameraPos);
+            float align = Vector3.Dot(forward, previousForward);
+            float fovDelta = Math.Abs(fov - previousFovV);
+            if (dist > 40.0 || align < 0.82f || fovDelta > 0.04f)
+                cut = true;
+        }
+        previousCameraPos = pos;
+        previousForward = forward;
+        previousFovV = fov;
+        hasCameraSample = true;
+        return cut;
     }
 
     public static bool TryGetRenderSize(out int width, out int height)

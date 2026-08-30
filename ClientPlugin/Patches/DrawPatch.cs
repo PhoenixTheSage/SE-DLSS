@@ -11,12 +11,17 @@ internal static class DrawPatch
     private static void Prefix()
     {
         DlssRuntime.DisableConsoleDrs();
+        DlssRuntime.BeginFrameResources();
         DlssRuntime.EvaluatedHdrThisFrame = false;
         if (DlssRuntime.WantsDlss)
         {
             DlssRuntime.TryPrepareFrame();
             if (DlssRuntime.IsLive)
+            {
                 Jitter.BeginFrame();
+                // Sprites record before DrawScene and must see the swapchain size.
+                DlssRuntime.RestoreViewportToOutput();
+            }
         }
     }
 }

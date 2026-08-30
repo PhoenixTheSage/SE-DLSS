@@ -1,3 +1,4 @@
+using System;
 using ClientPlugin.Dlss;
 using HarmonyLib;
 using VRage.Render11.Common;
@@ -30,23 +31,33 @@ internal static class ToneMappingPatch
         if (output.X <= 0 || output.Y <= 0)
             return true;
 
-        IBorrowedRtvTexture hdr = null;
+        IBorrowedUavTexture hdr = null;
         try
         {
-            hdr = MyManagers.RwTexturesPool.BorrowRtv(
+            // NGX EvaluateFeature requires D3D11_BIND_UNORDERED_ACCESS on the output.
+            // BorrowRtv is RT+SRV only and fails with 0x8A000009 (RWFlagMissing).
+            hdr = MyManagers.RwTexturesPool.BorrowUav(
                 "DLSS.HdrUpscale",
                 output.X,
                 output.Y,
                 MyGBuffer.LBufferFormat);
-            if (!DlssRuntime.TryEvaluate(hdr, src))
+            if (!DlssRuntime.TryEvaluate(hdr, src, avgLum))
+            {
+                DebugLog.Write("ToneMapping evaluate failed src=" + src.Size + " out=" + output);
                 return true;
+            }
 
             __result = TonemapAtOutput(hdr, avgLum, bloom, enableTonemapping, dirtTexture, needsAlphaLuminance, output);
             DlssRuntime.EvaluatedHdrThisFrame = __result != null;
+            if (__result != null)
+                DlssRuntime.ApplyOutputSpace();
+            DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + src.Size + " out=" + output +
+                                " tonemap=" + (__result != null));
             return __result == null;
         }
-        catch
+        catch (Exception e)
         {
+            DebugLog.Write("ToneMapping threw " + e);
             DlssRuntime.EvaluatedHdrThisFrame = false;
             return true;
         }
@@ -65,8 +76,9 @@ internal static class ToneMappingPatch
         bool needsAlphaLuminance,
         Vector2I output)
     {
-        var dest = MyManagers.RwTexturesPool.BorrowCustom("DLSS.Tonemapped", output.X, output.Y);
-        var savedResolution = MyCommon.FrameConstantsData.Screen.Resolution;
+        // (name, width, height) binds to (name, samplesCount, samplesQuality) and
+        // CreateTexture2D fails with E_INVALIDARG (1920 samples).
+        var dest = MyManagers.RwTexturesPool.BorrowCustom("DLSS.Tonemapped", output.X, output.Y, 1, 0);
         try
         {
             var data = MyCommon.FrameConstantsData;
@@ -100,15 +112,6 @@ internal static class ToneMappingPatch
         {
             dest.Release();
             return null;
-        }
-        finally
-        {
-            var data = MyCommon.FrameConstantsData;
-            data.Screen.Resolution = savedResolution;
-            MyCommon.FrameConstantsData = data;
-            var mapping = MyMapping.MapDiscard(MyCommon.FrameConstants);
-            mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
-            mapping.Unmap();
         }
     }
 }

@@ -5,6 +5,7 @@
 #include <d3dcompiler.h>
 #include <windows.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -36,12 +37,35 @@ std::vector<const wchar_t*> g_ngxPathPtrs;
 ID3D11Texture2D* g_mvTex;
 ID3D11RenderTargetView* g_mvRtv;
 ID3D11ShaderResourceView* g_mvSrv;
+ID3D11Texture2D* g_mvRawTex;
+ID3D11RenderTargetView* g_mvRawRtv;
+ID3D11ShaderResourceView* g_mvRawSrv;
 ID3D11VertexShader* g_mvVs;
 ID3D11PixelShader* g_mvPs;
+ID3D11PixelShader* g_mvDilatePs;
 ID3D11Buffer* g_mvCb;
 ID3D11SamplerState* g_mvSampler;
 uint32_t g_mvW;
 uint32_t g_mvH;
+ID3D11Resource* g_cachedDepthRes;
+ID3D11ShaderResourceView* g_cachedDepthSrv;
+ID3D11Resource* g_cachedUpSrcRes;
+ID3D11ShaderResourceView* g_cachedUpSrcSrv;
+ID3D11Resource* g_cachedUpDestRes;
+ID3D11DepthStencilView* g_cachedUpDestDsv;
+int g_createFlags = -1;
+
+ID3D11VertexShader* g_depthVs;
+ID3D11PixelShader* g_depthPs;
+ID3D11SamplerState* g_depthSampler;
+ID3D11DepthStencilState* g_depthWriteAlways;
+
+ID3D11Texture2D* g_evalOutTex;
+uint32_t g_evalOutW;
+uint32_t g_evalOutH;
+DXGI_FORMAT g_evalOutFmt = DXGI_FORMAT_UNKNOWN;
+FILE* g_debugLog;
+char g_lastEvalLog[256];
 
 using PFN_InitProject = NVSDK_NGX_Result(NVSDK_CONV*)(const char*, NVSDK_NGX_EngineType, const char*, const wchar_t*, ID3D11Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
 using PFN_InitProjectSdk = NVSDK_NGX_Result(NVSDK_CONV*)(const char*, NVSDK_NGX_EngineType, const char*, const wchar_t*, ID3D11Device*, const NVSDK_NGX_FeatureCommonInfo*, NVSDK_NGX_Version);
@@ -64,6 +88,43 @@ PFN_DestroyParams pDestroyParams;
 PFN_CreateFeature pCreateFeature;
 PFN_ReleaseFeature pReleaseFeature;
 PFN_Evaluate pEvaluate;
+
+void DebugLogLine(const char* fmt, ...)
+{
+    if (!g_debugLog)
+        return;
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    fprintf(g_debugLog, "%02u:%02u:%02u.%03u ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_debugLog, fmt, ap);
+    va_end(ap);
+    fputc('\n', g_debugLog);
+    fflush(g_debugLog);
+}
+
+void OpenDebugLog(const wchar_t* path)
+{
+    if (g_debugLog || !path || !path[0])
+        return;
+    if (_wfopen_s(&g_debugLog, path, L"w") != 0 || !g_debugLog)
+    {
+        g_debugLog = nullptr;
+        return;
+    }
+    DebugLogLine("SeDlssNgx debug log opened");
+}
+
+void CloseDebugLog()
+{
+    if (!g_debugLog)
+        return;
+    DebugLogLine("SeDlssNgx debug log closed");
+    fclose(g_debugLog);
+    g_debugLog = nullptr;
+    g_lastEvalLog[0] = 0;
+}
 
 void SetError(const char* text)
 {
@@ -98,12 +159,6 @@ cbuffer Constants : register(b0)
 Texture2D DepthTex : register(t0);
 SamplerState PointSamp : register(s0);
 
-static const float2 kMvDilateOff[8] =
-{
-    float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
-    float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)
-};
-
 float2 CameraVelocity(float2 uv, float depth)
 {
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -128,9 +183,39 @@ void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv :
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
     float depth = DepthTex.SampleLevel(PointSamp, uv, 0).r;
-    float2 velocity = CameraVelocity(uv, depth);
-    float closest = depth;
-    float2 dilated = velocity;
+    return float4(CameraVelocity(uv, depth), 0, 1);
+}
+)";
+
+const char kMvDilateShader[] = R"(
+cbuffer Constants : register(b0)
+{
+    float4x4 InvViewProj;
+    float4x4 UnjitteredViewProj;
+    float4x4 PrevViewProj;
+    float2 RenderSize;
+    float2 InvRenderSize;
+};
+Texture2D VelocityTex : register(t0);
+Texture2D DepthTex : register(t1);
+SamplerState PointSamp : register(s0);
+
+static const float2 kMvDilateOff[8] =
+{
+    float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
+    float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)
+};
+
+void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
+{
+    uv = float2((id << 1) & 2, id & 2);
+    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    float closest = DepthTex.SampleLevel(PointSamp, uv, 0).r;
+    float2 bestUv = uv;
     [unroll]
     for (int i = 0; i < 8; i++)
     {
@@ -139,32 +224,302 @@ float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
         if (nd > closest)
         {
             closest = nd;
-            dilated = CameraVelocity(nuv, nd);
+            bestUv = nuv;
         }
     }
-    return float4(dilated, 0, 1);
+    return float4(VelocityTex.SampleLevel(PointSamp, bestUv, 0).xy, 0, 1);
 }
 )";
 
+const char kDepthUpsampleShader[] = R"(
+Texture2D DepthTex : register(t0);
+SamplerState PointSamp : register(s0);
+
+void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
+{
+    uv = float2((id << 1) & 2, id & 2);
+    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Depth
+{
+    return DepthTex.SampleLevel(PointSamp, uv, 0).r;
+}
+)";
+
+void ReleaseMvRt(ID3D11Texture2D*& tex, ID3D11RenderTargetView*& rtv, ID3D11ShaderResourceView*& srv)
+{
+    if (rtv) { rtv->Release(); rtv = nullptr; }
+    if (srv) { srv->Release(); srv = nullptr; }
+    if (tex) { tex->Release(); tex = nullptr; }
+}
+
+void ReleaseCachedViews()
+{
+    if (g_cachedDepthSrv) { g_cachedDepthSrv->Release(); g_cachedDepthSrv = nullptr; }
+    g_cachedDepthRes = nullptr;
+    if (g_cachedUpSrcSrv) { g_cachedUpSrcSrv->Release(); g_cachedUpSrcSrv = nullptr; }
+    g_cachedUpSrcRes = nullptr;
+    if (g_cachedUpDestDsv) { g_cachedUpDestDsv->Release(); g_cachedUpDestDsv = nullptr; }
+    g_cachedUpDestRes = nullptr;
+}
+
 void ReleaseMvPipeline()
 {
-    if (g_mvRtv) { g_mvRtv->Release(); g_mvRtv = nullptr; }
-    if (g_mvSrv) { g_mvSrv->Release(); g_mvSrv = nullptr; }
-    if (g_mvTex) { g_mvTex->Release(); g_mvTex = nullptr; }
+    ReleaseMvRt(g_mvTex, g_mvRtv, g_mvSrv);
+    ReleaseMvRt(g_mvRawTex, g_mvRawRtv, g_mvRawSrv);
     g_mvW = g_mvH = 0;
+}
+
+void ReleaseEvalOutput()
+{
+    if (g_evalOutTex) { g_evalOutTex->Release(); g_evalOutTex = nullptr; }
+    g_evalOutW = g_evalOutH = 0;
+    g_evalOutFmt = DXGI_FORMAT_UNKNOWN;
+}
+
+DXGI_FORMAT DepthSrvFormat(DXGI_FORMAT resourceFormat)
+{
+    switch (resourceFormat)
+    {
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+        return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM:
+        return DXGI_FORMAT_R16_UNORM;
+    default:
+        return resourceFormat;
+    }
+}
+
+DXGI_FORMAT DepthDsvFormat(DXGI_FORMAT resourceFormat)
+{
+    switch (resourceFormat)
+    {
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        return DXGI_FORMAT_D24_UNORM_S8_UINT;
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+        return DXGI_FORMAT_D32_FLOAT;
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM:
+        return DXGI_FORMAT_D16_UNORM;
+    default:
+        return resourceFormat;
+    }
+}
+
+void ReleaseDepthUpsample()
+{
+    if (g_depthVs) { g_depthVs->Release(); g_depthVs = nullptr; }
+    if (g_depthPs) { g_depthPs->Release(); g_depthPs = nullptr; }
+    if (g_depthSampler) { g_depthSampler->Release(); g_depthSampler = nullptr; }
+    if (g_depthWriteAlways) { g_depthWriteAlways->Release(); g_depthWriteAlways = nullptr; }
+}
+
+bool EnsureDepthUpsample(ID3D11Device* device)
+{
+    if (g_depthVs && g_depthPs && g_depthSampler && g_depthWriteAlways)
+        return true;
+
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* err = nullptr;
+    HRESULT hr = D3DCompile(kDepthUpsampleShader, sizeof(kDepthUpsampleShader) - 1, "SeDlssDepth",
+        nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &err);
+    if (FAILED(hr))
+    {
+        SetError("failed to compile depth-upsample VS");
+        if (err) err->Release();
+        return false;
+    }
+    if (err) { err->Release(); err = nullptr; }
+    hr = D3DCompile(kDepthUpsampleShader, sizeof(kDepthUpsampleShader) - 1, "SeDlssDepth",
+        nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &err);
+    if (FAILED(hr))
+    {
+        SetError("failed to compile depth-upsample PS");
+        vsBlob->Release();
+        if (err) err->Release();
+        return false;
+    }
+    if (err) err->Release();
+
+    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_depthVs);
+    vsBlob->Release();
+    if (FAILED(hr))
+    {
+        psBlob->Release();
+        SetError("failed to create depth-upsample VS");
+        return false;
+    }
+    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_depthPs);
+    psBlob->Release();
+    if (FAILED(hr))
+    {
+        SetError("failed to create depth-upsample PS");
+        return false;
+    }
+
+    D3D11_SAMPLER_DESC samp{};
+    samp.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    samp.AddressU = samp.AddressV = samp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    hr = device->CreateSamplerState(&samp, &g_depthSampler);
+    if (FAILED(hr))
+    {
+        SetError("failed to create depth-upsample sampler");
+        return false;
+    }
+
+    D3D11_DEPTH_STENCIL_DESC ds{};
+    ds.DepthEnable = TRUE;
+    ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    ds.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    hr = device->CreateDepthStencilState(&ds, &g_depthWriteAlways);
+    if (FAILED(hr))
+    {
+        SetError("failed to create depth-upsample DSS");
+        return false;
+    }
+    return true;
+}
+
+bool QueryTexture2D(ID3D11Resource* res, D3D11_TEXTURE2D_DESC* desc)
+{
+    if (!res || !desc)
+        return false;
+    ID3D11Texture2D* tex = nullptr;
+    if (FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) || !tex)
+        return false;
+    tex->GetDesc(desc);
+    tex->Release();
+    return true;
+}
+
+bool EnsureEvalOutput(ID3D11Device* device, const D3D11_TEXTURE2D_DESC& destDesc)
+{
+    if (g_evalOutTex && g_evalOutW == destDesc.Width && g_evalOutH == destDesc.Height && g_evalOutFmt == destDesc.Format)
+        return true;
+    ReleaseEvalOutput();
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = destDesc.Width;
+    desc.Height = destDesc.Height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = destDesc.Format;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &g_evalOutTex);
+    if (FAILED(hr))
+    {
+        char buf[160];
+        sprintf_s(buf, "failed to create UAV evaluate target %ux%u fmt=%u (hr=0x%08X)",
+            destDesc.Width, destDesc.Height, (unsigned)destDesc.Format, (unsigned)hr);
+        SetError(buf);
+        return false;
+    }
+    g_evalOutW = desc.Width;
+    g_evalOutH = desc.Height;
+    g_evalOutFmt = desc.Format;
+    return true;
+}
+
+const char* NgxResultName(NVSDK_NGX_Result result)
+{
+    switch ((uint32_t)result & 0xFFFFu)
+    {
+    case 1: return "FeatureNotSupported";
+    case 2: return "PlatformError";
+    case 3: return "FeatureAlreadyExists";
+    case 4: return "FeatureNotFound";
+    case 5: return "InvalidParameter";
+    case 6: return "ScratchBufferTooSmall";
+    case 7: return "NotInitialized";
+    case 8: return "UnsupportedInputFormat";
+    case 9: return "RWFlagMissing";
+    case 10: return "MissingInput";
+    case 11: return "UnableToInitializeFeature";
+    case 12: return "OutOfDate";
+    case 13: return "OutOfGPUMemory";
+    case 14: return "UnsupportedFormat";
+    default: return "Fail";
+    }
 }
 
 void ReleaseMvShaders()
 {
     if (g_mvVs) { g_mvVs->Release(); g_mvVs = nullptr; }
     if (g_mvPs) { g_mvPs->Release(); g_mvPs = nullptr; }
+    if (g_mvDilatePs) { g_mvDilatePs->Release(); g_mvDilatePs = nullptr; }
     if (g_mvCb) { g_mvCb->Release(); g_mvCb = nullptr; }
     if (g_mvSampler) { g_mvSampler->Release(); g_mvSampler = nullptr; }
 }
 
+bool CompileFullscreenPs(ID3D11Device* device, const char* src, size_t srcLen, const char* name, ID3D11PixelShader** outPs)
+{
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* err = nullptr;
+    HRESULT hr = D3DCompile(src, srcLen, name, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &err);
+    if (FAILED(hr))
+    {
+        if (err) err->Release();
+        return false;
+    }
+    if (err) err->Release();
+    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, outPs);
+    psBlob->Release();
+    return SUCCEEDED(hr);
+}
+
+bool EnsureDepthSrv(ID3D11Device* device, ID3D11Resource* res, const D3D11_TEXTURE2D_DESC& desc,
+    ID3D11Resource*& cachedRes, ID3D11ShaderResourceView*& cachedSrv)
+{
+    if (cachedSrv && cachedRes == res)
+        return true;
+    if (cachedSrv)
+    {
+        cachedSrv->Release();
+        cachedSrv = nullptr;
+    }
+    cachedRes = res;
+
+    DXGI_FORMAT srvFormats[] = {
+        DepthSrvFormat(desc.Format),
+        DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS,
+        DXGI_FORMAT_R32_FLOAT,
+        DXGI_FORMAT_R24_UNORM_X8_TYPELESS
+    };
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    for (DXGI_FORMAT fmt : srvFormats)
+    {
+        if (fmt == DXGI_FORMAT_UNKNOWN)
+            continue;
+        srvDesc.Format = fmt;
+        if (SUCCEEDED(device->CreateShaderResourceView(res, &srvDesc, &cachedSrv)))
+            return true;
+        cachedSrv = nullptr;
+    }
+    return false;
+}
+
 bool EnsureMvShaders(ID3D11Device* device)
 {
-    if (g_mvVs && g_mvPs && g_mvCb && g_mvSampler)
+    if (g_mvVs && g_mvPs && g_mvDilatePs && g_mvCb && g_mvSampler)
         return true;
 
     ID3DBlob* vsBlob = nullptr;
@@ -203,6 +558,11 @@ bool EnsureMvShaders(ID3D11Device* device)
         SetError("failed to create motion-vector PS");
         return false;
     }
+    if (!CompileFullscreenPs(device, kMvDilateShader, sizeof(kMvDilateShader) - 1, "SeDlssMvDilate", &g_mvDilatePs))
+    {
+        SetError("failed to compile motion-vector dilate PS");
+        return false;
+    }
 
     D3D11_BUFFER_DESC cb{};
     cb.ByteWidth = 208;
@@ -228,12 +588,9 @@ bool EnsureMvShaders(ID3D11Device* device)
     return true;
 }
 
-bool EnsureMvTarget(ID3D11Device* device, uint32_t width, uint32_t height)
+bool CreateMvRt(ID3D11Device* device, uint32_t width, uint32_t height,
+    ID3D11Texture2D** tex, ID3D11RenderTargetView** rtv, ID3D11ShaderResourceView** srv)
 {
-    if (g_mvTex && g_mvW == width && g_mvH == height)
-        return true;
-    ReleaseMvPipeline();
-
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width;
     desc.Height = height;
@@ -243,22 +600,23 @@ bool EnsureMvTarget(ID3D11Device* device, uint32_t width, uint32_t height)
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &g_mvTex);
-    if (FAILED(hr))
-    {
-        SetError("failed to create motion-vector texture");
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, tex)))
         return false;
-    }
-    hr = device->CreateRenderTargetView(g_mvTex, nullptr, &g_mvRtv);
-    if (FAILED(hr))
-    {
-        SetError("failed to create motion-vector RTV");
+    if (FAILED(device->CreateRenderTargetView(*tex, nullptr, rtv)))
         return false;
-    }
-    hr = device->CreateShaderResourceView(g_mvTex, nullptr, &g_mvSrv);
-    if (FAILED(hr))
+    return SUCCEEDED(device->CreateShaderResourceView(*tex, nullptr, srv));
+}
+
+bool EnsureMvTarget(ID3D11Device* device, uint32_t width, uint32_t height)
+{
+    if (g_mvTex && g_mvRawTex && g_mvW == width && g_mvH == height)
+        return true;
+    ReleaseMvPipeline();
+    if (!CreateMvRt(device, width, height, &g_mvRawTex, &g_mvRawRtv, &g_mvRawSrv) ||
+        !CreateMvRt(device, width, height, &g_mvTex, &g_mvRtv, &g_mvSrv))
     {
-        SetError("failed to create motion-vector SRV");
+        ReleaseMvPipeline();
+        SetError("failed to create motion-vector targets");
         return false;
     }
     g_mvW = width;
@@ -309,6 +667,7 @@ void ReleaseDlss()
     }
     g_quality = -1;
     g_preset = -1;
+    g_createFlags = -1;
     g_outW = g_outH = 0;
 }
 
@@ -447,9 +806,7 @@ void BuildFeatureSearchPaths(const wchar_t* pluginPath)
 void ApplyHintPresets(NVSDK_NGX_Parameter* params, int preset)
 {
     unsigned int k = (unsigned int)NVSDK_NGX_DLSS_Hint_Render_Preset_K;
-    unsigned int l = (unsigned int)NVSDK_NGX_DLSS_Hint_Render_Preset_L;
-    unsigned int m = (unsigned int)NVSDK_NGX_DLSS_Hint_Render_Preset_M;
-    unsigned int dlaa = k, quality = k, balanced = k, perf = m, ultra = l, ultraQ = k;
+    unsigned int dlaa = k, quality = k, balanced = k, perf = k, ultra = k, ultraQ = k;
     if (preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_J ||
         preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_K ||
         preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_L ||
@@ -481,6 +838,16 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
     if (args->DllSearchPath && args->DllSearchPath[0])
         g_searchPath = args->DllSearchPath;
 
+    OpenDebugLog(args->DebugLogPath);
+#ifdef _DEBUG
+    if (!g_debugLog && args->LogPath && args->LogPath[0])
+    {
+        std::wstring fallback = JoinPath(args->LogPath, L"SeDlssNgx.debug.log");
+        OpenDebugLog(fallback.c_str());
+    }
+#endif
+    DebugLogLine("Init search=%s", Narrow(g_searchPath).c_str());
+
     // Current NVIDIA drivers keep _nvngx.dll in the DriverStore, not System32.
     // Load it by absolute path so a process-wide SetDllDirectory cannot hide it.
     std::wstring loadedFrom;
@@ -493,8 +860,10 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
         sprintf_s(buf, "failed to load _nvngx.dll (Win32 %lu). NGXCore=%s",
             loadError, ngxCore.empty() ? "(registry missing)" : ngxCore.c_str());
         SetError(buf);
+        DebugLogLine("%s", buf);
         return 0;
     }
+    DebugLogLine("loaded NGX from %s", Narrow(loadedFrom).c_str());
 
     // Driver _nvngx.dll exports Init_ProjectID / EvaluateFeature.
     // The NGX SDK static lib uses Init_with_ProjectID / EvaluateFeature_C.
@@ -519,6 +888,7 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
             pReleaseFeature ? 1 : 0, pEvaluate ? 1 : 0,
             Narrow(loadedFrom).c_str());
         SetError(buf);
+        DebugLogLine("%s", buf);
         return 0;
     }
 
@@ -546,8 +916,10 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
         char buf[96];
         sprintf_s(buf, "NVSDK_NGX_D3D11_Init_with_ProjectID failed (0x%08X)", (unsigned)result);
         SetError(buf);
+        DebugLogLine("%s", buf);
         return 0;
     }
+    DebugLogLine("NGX D3D11 init ok");
 
     result = pGetCaps(&g_capabilityParams);
     if (NVSDK_NGX_FAILED(result) || !g_capabilityParams)
@@ -566,9 +938,13 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
     {
         std::string msg = "initialized from " + Narrow(loadedFrom);
         SetError(msg.c_str());
+        DebugLogLine("%s", msg.c_str());
     }
     else
+    {
         SetError("NGX initialized but Super Sampling is not available");
+        DebugLogLine("NGX initialized but Super Sampling is not available");
+    }
     return 1;
 }
 
@@ -623,7 +999,8 @@ extern "C" int SeDlss_SetMode(int quality, uint32_t outWidth, uint32_t outHeight
         return 0;
     }
 
-    if (g_dlss && g_quality == quality && g_preset == preset && g_outW == outWidth && g_outH == outHeight)
+    int flags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    if (g_dlss && g_quality == quality && g_preset == preset && g_outW == outWidth && g_outH == outHeight && g_createFlags == flags)
     {
         if (outRenderWidth) *outRenderWidth = renderW;
         if (outRenderHeight) *outRenderHeight = renderH;
@@ -638,7 +1015,6 @@ extern "C" int SeDlss_SetMode(int quality, uint32_t outWidth, uint32_t outHeight
     params->Set(NVSDK_NGX_Parameter_OutHeight, outHeight);
     params->Set(NVSDK_NGX_Parameter_PerfQualityValue, quality);
     ApplyHintPresets(params, preset);
-    int flags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, flags);
     params->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
 
@@ -656,17 +1032,21 @@ extern "C" int SeDlss_SetMode(int quality, uint32_t outWidth, uint32_t outHeight
         char buf[96];
         sprintf_s(buf, "CreateFeature SuperSampling failed (0x%08X)", (unsigned)result);
         SetError(buf);
+        DebugLogLine("%s", buf);
         return 0;
     }
 
     g_quality = quality;
     g_preset = preset;
+    g_createFlags = flags;
     g_outW = outWidth;
     g_outH = outHeight;
     if (outRenderWidth) *outRenderWidth = renderW;
     if (outRenderHeight) *outRenderHeight = renderH;
     if (outSharpness) *outSharpness = sharpness;
     SetError("DLSS feature created");
+    DebugLogLine("CreateFeature ok quality=%d preset=%d out=%ux%u render=%ux%u",
+        quality, preset, outWidth, outHeight, renderW, renderH);
     return 1;
 }
 
@@ -698,9 +1078,31 @@ extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
         motion = g_mvTex;
     }
 
+    D3D11_TEXTURE2D_DESC destDesc{};
+    if (!QueryTexture2D(output, &destDesc))
+    {
+        SetError("output is not a 2D texture");
+        return 0;
+    }
+
+    // DLSS writes the output as a UAV. Keen's backbuffer and BorrowRtv targets are RT+SRV only.
+    ID3D11Resource* evalOutput = output;
+    bool copyBack = false;
+    if ((destDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) == 0)
+    {
+        if (!g_device || !EnsureEvalOutput(g_device, destDesc))
+        {
+            DebugLogLine("EnsureEvalOutput failed dest=%ux%u fmt=%u bind=0x%x",
+                destDesc.Width, destDesc.Height, (unsigned)destDesc.Format, destDesc.BindFlags);
+            return 0;
+        }
+        evalOutput = g_evalOutTex;
+        copyBack = true;
+    }
+
     params->Reset();
     params->Set(NVSDK_NGX_Parameter_Color, color);
-    params->Set(NVSDK_NGX_Parameter_Output, output);
+    params->Set(NVSDK_NGX_Parameter_Output, evalOutput);
     params->Set(NVSDK_NGX_Parameter_Depth, depth);
     if (motion)
         params->Set(NVSDK_NGX_Parameter_MotionVectors, motion);
@@ -722,15 +1124,30 @@ extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
         char colorDesc[64], depthDesc[64], outputDesc[64], motionDesc[64];
         DescribeTexture(color, colorDesc, sizeof(colorDesc));
         DescribeTexture(depth, depthDesc, sizeof(depthDesc));
-        DescribeTexture(output, outputDesc, sizeof(outputDesc));
+        DescribeTexture(evalOutput, outputDesc, sizeof(outputDesc));
         DescribeTexture(motion, motionDesc, sizeof(motionDesc));
         char buf[512];
         sprintf_s(buf,
-            "EvaluateFeature failed (0x%08X) render=%ux%u color=%s depth=%s mv=%s output=%s",
-            (unsigned)result, args->RenderWidth, args->RenderHeight,
+            "EvaluateFeature failed (0x%08X %s) render=%ux%u color=%s depth=%s mv=%s output=%s",
+            (unsigned)result, NgxResultName(result), args->RenderWidth, args->RenderHeight,
             colorDesc, depthDesc, motionDesc, outputDesc);
         SetError(buf);
+        DebugLogLine("%s", buf);
         return 0;
+    }
+    if (copyBack)
+        ctx->CopyResource(output, g_evalOutTex);
+    if (g_debugLog)
+    {
+        char evalLog[256];
+        sprintf_s(evalLog, "Evaluate ok render=%ux%u copyBack=%d dest=%ux%u fmt=%u bind=0x%x",
+            args->RenderWidth, args->RenderHeight, copyBack ? 1 : 0,
+            destDesc.Width, destDesc.Height, (unsigned)destDesc.Format, destDesc.BindFlags);
+        if (strcmp(evalLog, g_lastEvalLog) != 0)
+        {
+            strcpy_s(g_lastEvalLog, evalLog);
+            DebugLogLine("%s", evalLog);
+        }
     }
     SetError("ok");
     return 1;
@@ -772,47 +1189,125 @@ extern "C" void* SeDlss_GenerateCameraMotionVectors(const SeDlssMvArgs* args)
     memcpy(mapped.pData, &cb, sizeof(cb));
     ctx->Unmap(g_mvCb, 0);
 
-    // Unbind Keen's depth DSV before creating an SRV on the same texture.
+    // Unbind Keen's depth DSV before sampling the same texture.
     ID3D11RenderTargetView* nullRtvs[1] = { nullptr };
     ctx->OMSetRenderTargets(1, nullRtvs, nullptr);
 
-    ID3D11ShaderResourceView* depthSrv = nullptr;
     auto* depthRes = static_cast<ID3D11Resource*>(args->Depth);
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-    srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MipLevels = 1;
-    if (FAILED(device->CreateShaderResourceView(depthRes, &srvDesc, &depthSrv)))
+    D3D11_TEXTURE2D_DESC depthDesc{};
+    QueryTexture2D(depthRes, &depthDesc);
+    if (!EnsureDepthSrv(device, depthRes, depthDesc, g_cachedDepthRes, g_cachedDepthSrv))
     {
-        srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-        if (FAILED(device->CreateShaderResourceView(depthRes, &srvDesc, &depthSrv)))
-        {
-            SetError("failed to create depth SRV for motion vectors");
-            return nullptr;
-        }
+        SetError("failed to create depth SRV for motion vectors");
+        DebugLogLine("depth SRV failed fmt=%u", (unsigned)depthDesc.Format);
+        return nullptr;
     }
 
     D3D11_VIEWPORT vp{};
     vp.Width = (float)args->Width;
     vp.Height = (float)args->Height;
     vp.MaxDepth = 1.0f;
-    ctx->OMSetRenderTargets(1, &g_mvRtv, nullptr);
     ctx->RSSetViewports(1, &vp);
     ctx->IASetInputLayout(nullptr);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx->VSSetShader(g_mvVs, nullptr, 0);
-    ctx->PSSetShader(g_mvPs, nullptr, 0);
     ctx->VSSetConstantBuffers(0, 1, &g_mvCb);
     ctx->PSSetConstantBuffers(0, 1, &g_mvCb);
-    ctx->PSSetShaderResources(0, 1, &depthSrv);
     ctx->PSSetSamplers(0, 1, &g_mvSampler);
+
+    ctx->OMSetRenderTargets(1, &g_mvRawRtv, nullptr);
+    ctx->PSSetShader(g_mvPs, nullptr, 0);
+    ctx->PSSetShaderResources(0, 1, &g_cachedDepthSrv);
+    ctx->Draw(3, 0);
+
+    ID3D11ShaderResourceView* nullSrv[2] = {};
+    ctx->PSSetShaderResources(0, 2, nullSrv);
+    ctx->OMSetRenderTargets(1, nullRtvs, nullptr);
+
+    ID3D11ShaderResourceView* dilateSrvs[2] = { g_mvRawSrv, g_cachedDepthSrv };
+    ctx->OMSetRenderTargets(1, &g_mvRtv, nullptr);
+    ctx->PSSetShader(g_mvDilatePs, nullptr, 0);
+    ctx->PSSetShaderResources(0, 2, dilateSrvs);
+    ctx->Draw(3, 0);
+
+    ctx->PSSetShaderResources(0, 2, nullSrv);
+    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    return g_mvTex;
+}
+
+extern "C" int SeDlss_UpsampleDepth(void* devicePtr, void* contextPtr, void* srcDepth, void* destDepth)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!devicePtr || !contextPtr || !srcDepth || !destDepth)
+    {
+        SetError("depth upsample args are incomplete");
+        return 0;
+    }
+
+    auto* device = static_cast<ID3D11Device*>(devicePtr);
+    auto* ctx = static_cast<ID3D11DeviceContext*>(contextPtr);
+    auto* srcRes = static_cast<ID3D11Resource*>(srcDepth);
+    auto* destRes = static_cast<ID3D11Resource*>(destDepth);
+    if (!EnsureDepthUpsample(device))
+        return 0;
+
+    D3D11_TEXTURE2D_DESC srcDesc{};
+    D3D11_TEXTURE2D_DESC destDesc{};
+    if (!QueryTexture2D(srcRes, &srcDesc) || !QueryTexture2D(destRes, &destDesc))
+    {
+        SetError("depth upsample textures are not Texture2D");
+        return 0;
+    }
+
+    ID3D11RenderTargetView* nullRtvs[1] = { nullptr };
+    ctx->OMSetRenderTargets(1, nullRtvs, nullptr);
+
+    if (!EnsureDepthSrv(device, srcRes, srcDesc, g_cachedUpSrcRes, g_cachedUpSrcSrv))
+    {
+        SetError("failed to create depth upsample source SRV");
+        return 0;
+    }
+
+    if (!g_cachedUpDestDsv || g_cachedUpDestRes != destRes)
+    {
+        if (g_cachedUpDestDsv)
+        {
+            g_cachedUpDestDsv->Release();
+            g_cachedUpDestDsv = nullptr;
+        }
+        g_cachedUpDestRes = destRes;
+        D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format = DepthDsvFormat(destDesc.Format);
+        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (FAILED(device->CreateDepthStencilView(destRes, &dsvDesc, &g_cachedUpDestDsv)))
+        {
+            g_cachedUpDestDsv = nullptr;
+            SetError("failed to create depth upsample dest DSV");
+            return 0;
+        }
+    }
+
+    D3D11_VIEWPORT vp{};
+    vp.Width = (float)destDesc.Width;
+    vp.Height = (float)destDesc.Height;
+    vp.MaxDepth = 1.0f;
+    ctx->OMSetRenderTargets(0, nullptr, g_cachedUpDestDsv);
+    ctx->OMSetDepthStencilState(g_depthWriteAlways, 0);
+    ctx->RSSetViewports(1, &vp);
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(g_depthVs, nullptr, 0);
+    ctx->PSSetShader(g_depthPs, nullptr, 0);
+    ctx->PSSetShaderResources(0, 1, &g_cachedUpSrcSrv);
+    ctx->PSSetSamplers(0, 1, &g_depthSampler);
     ctx->Draw(3, 0);
 
     ID3D11ShaderResourceView* nullSrv = nullptr;
     ctx->PSSetShaderResources(0, 1, &nullSrv);
     ctx->OMSetRenderTargets(0, nullptr, nullptr);
-    depthSrv->Release();
-    return g_mvTex;
+    ctx->OMSetDepthStencilState(nullptr, 0);
+    SetError("ok");
+    return 1;
 }
 
 extern "C" void SeDlss_Shutdown(void)
@@ -820,7 +1315,10 @@ extern "C" void SeDlss_Shutdown(void)
     std::lock_guard<std::mutex> lock(g_mutex);
     ReleaseDlss();
     ReleaseMvPipeline();
+    ReleaseEvalOutput();
     ReleaseMvShaders();
+    ReleaseDepthUpsample();
+    ReleaseCachedViews();
     if (g_evalParams && pDestroyParams)
     {
         pDestroyParams(g_evalParams);
@@ -838,6 +1336,7 @@ extern "C" void SeDlss_Shutdown(void)
         g_ngx = nullptr;
     }
     SetError("shutdown");
+    CloseDebugLog();
 }
 
 extern "C" const char* SeDlss_LastError(void)

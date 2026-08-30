@@ -19,6 +19,7 @@ internal static class NgxNative
         public IntPtr Device;
         [MarshalAs(UnmanagedType.LPWStr)] public string DllSearchPath;
         [MarshalAs(UnmanagedType.LPWStr)] public string LogPath;
+        [MarshalAs(UnmanagedType.LPWStr)] public string DebugLogPath;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -29,6 +30,7 @@ internal static class NgxNative
         public IntPtr Depth;
         public IntPtr MotionVectors;
         public IntPtr Output;
+        public IntPtr Exposure;
         public float JitterX;
         public float JitterY;
         public float MvScaleX;
@@ -68,6 +70,9 @@ internal static class NgxNative
     internal delegate IntPtr GenerateMvDelegate(ref MvArgs args);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate int UpsampleDepthDelegate(IntPtr device, IntPtr context, IntPtr srcDepth, IntPtr destDepth);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate void ShutdownDelegate();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -78,6 +83,7 @@ internal static class NgxNative
     internal static SetModeDelegate SetMode;
     internal static EvaluateDelegate Evaluate;
     internal static GenerateMvDelegate GenerateCameraMotionVectors;
+    internal static UpsampleDepthDelegate UpsampleDepth;
     internal static ShutdownDelegate Shutdown;
     internal static LastErrorDelegate LastErrorPtr;
 
@@ -114,6 +120,7 @@ internal static class NgxNative
         SetMode = Get<SetModeDelegate>("SeDlss_SetMode");
         Evaluate = Get<EvaluateDelegate>("SeDlss_Evaluate");
         GenerateCameraMotionVectors = Get<GenerateMvDelegate>("SeDlss_GenerateCameraMotionVectors");
+        UpsampleDepth = Get<UpsampleDepthDelegate>("SeDlss_UpsampleDepth");
         Shutdown = Get<ShutdownDelegate>("SeDlss_Shutdown");
         LastErrorPtr = Get<LastErrorDelegate>("SeDlss_LastError");
         if (Init == null || IsSupported == null || SetMode == null || Evaluate == null || Shutdown == null)

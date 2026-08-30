@@ -21,6 +21,10 @@ public static class DlssStatus
             sb.Append("Output resolution: ").Append(DlssRuntime.OutputWidth).Append(" x ").AppendLine(DlssRuntime.OutputHeight.ToString());
             sb.Append("HDR evaluate: ").AppendLine(DlssRuntime.EvaluatedHdrThisFrame ? "yes" : "no");
             sb.Append("Search paths: ").AppendLine(NgxHost.SearchPathSummary());
+#if DEBUG
+            if (!string.IsNullOrEmpty(DebugLog.FilePath))
+                sb.Append("Debug log: ").AppendLine(DebugLog.FilePath);
+#endif
             if (DlssRuntime.LastEvaluateFailed)
                 sb.AppendLine("Last evaluate failed; falling back to a stretch blit.");
             return sb.ToString();

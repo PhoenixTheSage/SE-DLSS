@@ -17,7 +17,7 @@ public class Config : INotifyPropertyChanged
 
     private AntiAliasingChoice antiAliasing = AntiAliasingChoice.Off;
     private DlssMode mode = DlssMode.Quality;
-    private DlssModel model = DlssModel.LatestRecommended;
+    private DlssModel model = DlssModel.LatestModel;
     private float sharpness = 0.5f;
 
     #endregion
@@ -64,7 +64,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref mode, value);
     }
 
-    [Dropdown(description: "Transformer model used for Super Resolution. NVIDIA App cannot override this unofficial title. Latest Recommended picks K for Quality/Balanced/DLAA, M for Performance, and L for Ultra Performance.")]
+    [Dropdown(description: "Transformer model used for Super Resolution. NVIDIA App cannot override this unofficial title. Latest Model uses transformer K at every quality level.")]
     public DlssModel Model
     {
         get => model;
@@ -105,7 +105,10 @@ public class Config : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) || propertyName == nameof(Sharpness))
+        {
+            DebugLog.Write("config " + propertyName + " aa=" + antiAliasing + " mode=" + mode + " model=" + model + " sharpness=" + sharpness);
             DlssRuntime.NotifyConfigChanged();
+        }
         if (propertyName == nameof(AntiAliasing) && !SuppressApply)
             GameAntiAliasing.ApplyFromConfig();
     }

@@ -31,8 +31,10 @@ public static class ConfigStorage
         Config.SuppressApply = true;
         try
         {
-            using (var streamReader = File.OpenText(path))
-                return (Config)xmlSerializer.Deserialize(streamReader) ?? Config.Default;
+            var xml = File.ReadAllText(path);
+            xml = xml.Replace("LatestRecommended", "LatestModel");
+            using (var reader = new StringReader(xml))
+                return (Config)xmlSerializer.Deserialize(reader) ?? Config.Default;
         }
         catch (Exception)
         {

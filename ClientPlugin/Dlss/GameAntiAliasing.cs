@@ -151,6 +151,7 @@ internal static class GameAntiAliasing
         DlssRuntime.NotifyConfigChanged();
         SelectCombo(pluginCombo, ToPluginKey(Config.Current.AntiAliasing));
         SelectCombo(graphicsCombo, ToGraphicsKey(Config.Current.AntiAliasing));
+        DebugLog.Write("SetChoice " + choice + " apply=" + applyGame + " save=" + save);
         if (save)
             ConfigStorage.Save(Config.Current);
     }

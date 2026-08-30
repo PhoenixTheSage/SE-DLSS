@@ -17,6 +17,8 @@ internal static class DrawScenePatch
             return;
         }
 
+        BillboardOutputPass.BeginDraw();
+        DebugLog.WriteFrame("DrawScene internal " + DlssRuntime.InternalWidth + "x" + DlssRuntime.InternalHeight);
         DlssRuntime.ApplyInternalResolution();
         DlssRuntime.PinViewportToInternal();
     }
@@ -28,6 +30,6 @@ internal static class DrawScenePatch
         if (env != null)
             Jitter.Restore(env.Matrices);
         if (DlssRuntime.IsLive)
-            DlssRuntime.RestoreViewportToOutput();
+            DlssRuntime.ApplyOutputSpace();
     }
 }

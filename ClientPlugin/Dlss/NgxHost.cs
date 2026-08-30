@@ -25,7 +25,10 @@ public static class NgxHost
             return;
         path = Path.GetFullPath(path);
         if (!SearchPaths.Contains(path))
+        {
             SearchPaths.Add(path);
+            DebugLog.Write("search path " + path);
+        }
     }
 
     public static string SearchPathSummary()
@@ -40,6 +43,7 @@ public static class NgxHost
         if (device == IntPtr.Zero)
         {
             LastError = "D3D11 device is not ready";
+            DebugLog.Write("TryInit: " + LastError);
             return false;
         }
 
@@ -48,16 +52,20 @@ public static class NgxHost
             string loadError = "SeDlssNgx.dll was not found";
             foreach (var path in SearchPaths)
             {
+                DebugLog.Write("TryLoad " + path);
                 if (NgxNative.TryLoad(path, out loadError))
                 {
                     nativeLoaded = true;
+                    DebugLog.Write("loaded SeDlssNgx.dll from " + path);
                     break;
                 }
+                DebugLog.Write("TryLoad failed: " + loadError);
             }
             if (!nativeLoaded)
             {
                 LastError = loadError;
                 MyLog.Default.Warning("DLSS: " + LastError);
+                DebugLog.Write("TryInit native load failed: " + LastError);
                 return false;
             }
         }
@@ -67,18 +75,22 @@ public static class NgxHost
         {
             Device = device,
             DllSearchPath = searchPath,
-            LogPath = string.IsNullOrEmpty(logPath) ? searchPath : logPath
+            LogPath = string.IsNullOrEmpty(logPath) ? searchPath : logPath,
+            DebugLogPath = DebugLog.NativeFilePath
         };
+        DebugLog.Write("NGX Init dllSearch=" + searchPath + " log=" + args.LogPath + " debug=" + (args.DebugLogPath ?? "(none)"));
         if (NgxNative.Init(ref args) == 0)
         {
             LastError = NgxNative.LastError();
             MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
+            DebugLog.Write("NGX Init failed: " + LastError);
             return false;
         }
 
         IsLoaded = true;
         IsSupported = NgxNative.IsSupported() != 0;
         LastError = NgxNative.LastError();
+        DebugLog.Write("NGX Init ok supported=" + IsSupported + " " + LastError);
         return IsSupported;
     }
 
@@ -87,7 +99,10 @@ public static class NgxHost
         renderWidth = outputWidth;
         renderHeight = outputHeight;
         if (!IsSupported)
+        {
+            DebugLog.Write("TrySetMode skipped: not supported");
             return false;
+        }
 
         var quality = ToNgxQuality(mode);
         var preset = ToNgxPreset(Config.Current.Model);
@@ -99,10 +114,12 @@ public static class NgxHost
         }
 
         float sharpness;
+        DebugLog.Write("SetMode quality=" + quality + " preset=" + preset + " out=" + outputWidth + "x" + outputHeight);
         if (NgxNative.SetMode(quality, outputWidth, outputHeight, out renderWidth, out renderHeight, out sharpness, preset) == 0)
         {
             IsReady = false;
             LastError = NgxNative.LastError();
+            DebugLog.Write("SetMode failed: " + LastError);
             return false;
         }
 
@@ -112,11 +129,12 @@ public static class NgxHost
         lastOutH = outputHeight;
         IsReady = true;
         LastError = NgxNative.LastError();
+        DebugLog.Write("SetMode ok render=" + renderWidth + "x" + renderHeight + " sharpness=" + sharpness + " " + LastError);
         return true;
     }
 
     public static bool Evaluate(IntPtr context, IntPtr color, IntPtr depth, IntPtr motionVectors, IntPtr output,
-        float jitterX, float jitterY, int reset, float sharpness, uint renderWidth, uint renderHeight)
+        IntPtr exposure, float jitterX, float jitterY, int reset, float sharpness, uint renderWidth, uint renderHeight)
     {
         if (!IsReady)
             return false;
@@ -127,6 +145,7 @@ public static class NgxHost
             Depth = depth,
             MotionVectors = motionVectors,
             Output = output,
+            Exposure = exposure,
             JitterX = jitterX,
             JitterY = jitterY,
             MvScaleX = 1f,
@@ -139,9 +158,14 @@ public static class NgxHost
         if (NgxNative.Evaluate(ref args) == 0)
         {
             LastError = NgxNative.LastError();
+            DebugLog.Write("Evaluate failed reset=" + reset + " jitter=" + jitterX + "," + jitterY +
+                           " render=" + renderWidth + "x" + renderHeight + " mv=" + (motionVectors != IntPtr.Zero) +
+                           " " + LastError);
             return false;
         }
         LastError = NgxNative.LastError();
+        DebugLog.WriteFrame("Evaluate ok reset=" + reset +
+                            " render=" + renderWidth + "x" + renderHeight + " mv=" + (motionVectors != IntPtr.Zero));
         return true;
     }
 
@@ -161,11 +185,29 @@ public static class NgxHost
             UnjitteredViewProj = unjitteredViewProj,
             PrevViewProj = prevViewProj
         };
-        return NgxNative.GenerateCameraMotionVectors(ref args);
+        var mv = NgxNative.GenerateCameraMotionVectors(ref args);
+        if (mv == IntPtr.Zero)
+            DebugLog.Write("GenerateCameraMotionVectors failed " + width + "x" + height + " " + (NgxNative.LastError() ?? LastError));
+        return mv;
+    }
+
+    public static bool TryUpsampleDepth(IntPtr device, IntPtr context, IntPtr srcDepth, IntPtr destDepth)
+    {
+        if (!nativeLoaded || NgxNative.UpsampleDepth == null)
+            return false;
+        if (device == IntPtr.Zero || context == IntPtr.Zero || srcDepth == IntPtr.Zero || destDepth == IntPtr.Zero)
+            return false;
+        if (NgxNative.UpsampleDepth(device, context, srcDepth, destDepth) == 0)
+        {
+            DebugLog.Write("UpsampleDepth failed " + (NgxNative.LastError() ?? LastError));
+            return false;
+        }
+        return true;
     }
 
     public static void Shutdown()
     {
+        DebugLog.Write("NgxHost.Shutdown loaded=" + IsLoaded + " ready=" + IsReady);
         if (nativeLoaded && NgxNative.Shutdown != null)
             NgxNative.Shutdown();
         IsLoaded = false;
@@ -210,7 +252,7 @@ public static class NgxHost
             case DlssModel.TransformerK: return 11;
             case DlssModel.TransformerL: return 12;
             case DlssModel.TransformerM: return 13;
-            default: return 0;
+            default: return 11;
         }
     }
 

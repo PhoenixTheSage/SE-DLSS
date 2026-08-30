@@ -15,7 +15,11 @@ typedef enum NVSDK_NGX_Version { NVSDK_NGX_Version_API = NVSDK_NGX_VERSION_API_M
 typedef int NVSDK_NGX_Result;
 #define NVSDK_NGX_Result_Success ((NVSDK_NGX_Result)0x1)
 #define NVSDK_NGX_Result_Fail ((NVSDK_NGX_Result)0xBAD00000)
-#define NVSDK_NGX_FAILED(r) (((uint32_t)(r) & 0xFFF00000) == (uint32_t)NVSDK_NGX_Result_Fail)
+#define NVSDK_NGX_Result_FAIL_RWFlagMissing ((NVSDK_NGX_Result)(0xBAD00000 | 9))
+// SDK headers use 0xBAD00000. Current _nvngx.dll also returns HRESULT-style 0x8A00000n.
+#define NVSDK_NGX_FAILED(r) \
+    ((uint32_t)(r) != (uint32_t)NVSDK_NGX_Result_Success && \
+     ((((uint32_t)(r) & 0x80000000u) != 0) || (((uint32_t)(r) & 0xFFF00000u) == (uint32_t)NVSDK_NGX_Result_Fail)))
 typedef enum NVSDK_NGX_Feature { NVSDK_NGX_Feature_SuperSampling = 1 } NVSDK_NGX_Feature;
 typedef enum NVSDK_NGX_EngineType { NVSDK_NGX_ENGINE_TYPE_CUSTOM = 0 } NVSDK_NGX_EngineType;
 typedef enum NVSDK_NGX_PerfQuality_Value
@@ -124,6 +128,7 @@ typedef void(NVSDK_CONV* PFN_NVSDK_NGX_ProgressCallback_C)(float InCurrentProgre
 #define NVSDK_NGX_Parameter_Output "Output"
 #define NVSDK_NGX_Parameter_Depth "Depth"
 #define NVSDK_NGX_Parameter_MotionVectors "MotionVectors"
+#define NVSDK_NGX_Parameter_ExposureTexture "ExposureTexture"
 #define NVSDK_NGX_Parameter_Jitter_Offset_X "Jitter.Offset.X"
 #define NVSDK_NGX_Parameter_Jitter_Offset_Y "Jitter.Offset.Y"
 #define NVSDK_NGX_Parameter_MV_Scale_X "MV.Scale.X"

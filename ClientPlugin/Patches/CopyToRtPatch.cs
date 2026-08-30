@@ -23,36 +23,12 @@ internal static class CopyToRtPatch
             return true;
 
         var output = DlssRuntime.OutputResolution();
-        if (DlssRuntime.EvaluatedHdrThisFrame &&
-            source.Size.X == output.X &&
-            source.Size.Y == output.Y)
-        {
-            passthrough = true;
-            try
-            {
-                MyCopyToRT.Run(destination, source, false, new MyViewport(output.X, output.Y), true);
-            }
-            finally
-            {
-                passthrough = false;
-                DlssRuntime.RestoreViewportToOutput();
-            }
-            return false;
-        }
+        DebugLog.WriteFrame(
+            (DlssRuntime.EvaluatedHdrThisFrame ? "CopyToRT blit after HDR " : "CopyToRT blit ") +
+            source.Size + " -> " + output);
 
-        if (DlssRuntime.InternalWidth <= 0 ||
-            source.Size.X != DlssRuntime.InternalWidth ||
-            source.Size.Y != DlssRuntime.InternalHeight)
-            return true;
-
-        if (DlssRuntime.TryEvaluate(destination, source))
-        {
-            DlssRuntime.RestoreViewportToOutput();
-            return false;
-        }
-
-        // Keen's CopyToRT viewport follows ViewportResolution (internal after SetDRS),
-        // so the original blit would only fill a corner of the DXGI backbuffer.
+        // Never evaluate into the DXGI swapchain. It is RT+SRV only (NGX copyBack),
+        // and Backbuffer.Size aliases internal ResolutionI after SetDRS.
         passthrough = true;
         try
         {
@@ -64,5 +40,17 @@ internal static class CopyToRtPatch
             DlssRuntime.RestoreViewportToOutput();
         }
         return false;
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(IRtvBindable destination)
+    {
+        if (passthrough)
+            return;
+        if (!DlssRuntime.IsLive || destination == null)
+            return;
+        if (!ReferenceEquals(destination, MyRender11.Backbuffer))
+            return;
+        BillboardOutputPass.TryDrawAfterSceneBlit();
     }
 }

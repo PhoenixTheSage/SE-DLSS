@@ -27,16 +27,21 @@ public class Plugin : IPlugin
     {
         Instance = this;
         Instance.settingsGenerator = new SettingsGenerator();
+        DebugLog.Open();
         NgxHost.AddSearchPath(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
+        DebugLog.Write("Init search=" + NgxHost.SearchPathSummary());
 
         var harmony = new Harmony(Name);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
         MyLog.Default.WriteLine("DLSS plugin initialized");
+        DebugLog.Write("Harmony patched, plugin initialized");
     }
 
     public void Dispose()
     {
+        DebugLog.Write("Dispose");
         DlssRuntime.Shutdown();
+        DebugLog.Close();
         Instance = null;
     }
 
@@ -57,5 +62,6 @@ public class Plugin : IPlugin
     {
         NgxHost.AddSearchPath(folder);
         MyLog.Default.WriteLine("DLSS asset folder: " + folder);
+        DebugLog.Write("LoadAssets " + folder);
     }
 }
