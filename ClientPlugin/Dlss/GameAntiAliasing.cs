@@ -9,30 +9,49 @@ internal static class GameAntiAliasing
 {
     public const long DlssComboKey = 100;
 
-    private static MyGuiControlCombobox graphicsCombo;
-    private static MyGuiControlCombobox pluginCombo;
-    private static AntiAliasingChoice graphicsOpenedWith;
-    private static bool graphicsCommitted;
-    private static bool suppress;
+    private static MyGuiControlCombobox _graphicsCombo;
+    private static MyGuiControlCombobox _pluginCombo;
+    private static AntiAliasingChoice _graphicsOpenedWith;
+    private static bool _graphicsCommitted;
+    private static bool _suppress;
 
     public static void BindPluginCombo(MyGuiControlCombobox combo)
     {
-        pluginCombo = combo;
+        if (ReferenceEquals(_pluginCombo, combo))
+        {
+            if (combo != null)
+                SelectCombo(combo, ToPluginKey(DisplayedChoice(Config.Current.AntiAliasing)));
+            return;
+        }
+
+        if (_pluginCombo != null)
+            _pluginCombo.ItemSelected -= OnPluginComboSelected;
+
+        _pluginCombo = combo;
         if (combo == null)
             return;
-        SelectCombo(combo, ToPluginKey(Config.Current.AntiAliasing));
+
+        SelectCombo(combo, ToPluginKey(DisplayedChoice(Config.Current.AntiAliasing)));
         combo.ItemSelected += OnPluginComboSelected;
     }
 
     public static void BindGraphicsCombo(MyGuiControlCombobox combo)
     {
-        if (combo != null && graphicsCombo != combo)
+        GpuSupport.TryProbe();
+        if (!ReferenceEquals(_graphicsCombo, combo))
         {
-            graphicsCombo = combo;
-            graphicsCommitted = false;
-            graphicsOpenedWith = Config.Current.AntiAliasing;
-            combo.ItemSelected += OnGraphicsComboSelected;
+            if (_graphicsCombo != null)
+                _graphicsCombo.ItemSelected -= OnGraphicsComboSelected;
+
+            _graphicsCombo = combo;
+            _graphicsCommitted = false;
+            if (combo != null)
+            {
+                _graphicsOpenedWith = Config.Current.AntiAliasing;
+                combo.ItemSelected += OnGraphicsComboSelected;
+            }
         }
+
         AfterGraphicsWrite(combo);
     }
 
@@ -43,6 +62,12 @@ internal static class GameAntiAliasing
             return;
 
         var key = combo.GetSelectedKey();
+        if (Config.Current.AntiAliasing == AntiAliasingChoice.DLSS &&
+            !GpuSupport.CanOfferDlss)
+        {
+            SelectCombo(combo, (long)MyAntialiasingMode.NONE);
+            return;
+        }
         if (Config.Current.AntiAliasing == AntiAliasingChoice.DLSS &&
             key == (long)MyAntialiasingMode.NONE)
         {
@@ -55,19 +80,30 @@ internal static class GameAntiAliasing
 
     public static void OnGraphicsScreenClosed()
     {
-        if (graphicsCombo == null)
+        if (_graphicsCombo == null)
             return;
-        if (!graphicsCommitted)
-            SetChoice(graphicsOpenedWith, applyGame: false, save: false);
-        graphicsCombo = null;
-        graphicsCommitted = false;
+        if (!_graphicsCommitted &&
+            !(_graphicsOpenedWith == AntiAliasingChoice.DLSS && !GpuSupport.CanOfferDlss))
+            SetChoice(_graphicsOpenedWith, applyGame: false, save: false);
+
+        _graphicsCombo.ItemSelected -= OnGraphicsComboSelected;
+        _graphicsCombo = null;
+        _graphicsCommitted = false;
     }
 
     public static void OnGraphicsOk()
     {
-        graphicsCommitted = true;
-        if (graphicsCombo != null)
-            SetChoice(FromGraphicsKey(graphicsCombo.GetSelectedKey()), applyGame: true, save: true);
+        _graphicsCommitted = true;
+        if (_graphicsCombo == null)
+            return;
+        var key = _graphicsCombo.GetSelectedKey();
+        var choice = FromGraphicsKey(key);
+        if (choice != AntiAliasingChoice.DLSS &&
+            _graphicsOpenedWith == AntiAliasingChoice.DLSS &&
+            !GpuSupport.CanOfferDlss &&
+            key == (long)MyAntialiasingMode.NONE)
+            return;
+        SetChoice(choice, applyGame: true, save: true);
     }
 
     public static void RemapDlssKey(MyGuiControlCombobox combo, ref MyGraphicsSettings graphicsSettings)
@@ -83,7 +119,7 @@ internal static class GameAntiAliasing
 
     public static void AlignConfigWithGame()
     {
-        if (graphicsCombo != null)
+        if (_graphicsCombo != null)
             return;
         var resolved = ResolveFromGame();
         if (Config.Current.AntiAliasing == resolved)
@@ -116,22 +152,38 @@ internal static class GameAntiAliasing
         MyVideoSettingsManager.Apply(gs);
     }
 
+    public static void Reset()
+    {
+        if (_pluginCombo != null)
+            _pluginCombo.ItemSelected -= OnPluginComboSelected;
+        if (_graphicsCombo != null)
+            _graphicsCombo.ItemSelected -= OnGraphicsComboSelected;
+
+        _pluginCombo = null;
+        _graphicsCombo = null;
+        _graphicsOpenedWith = default(AntiAliasingChoice);
+        _graphicsCommitted = false;
+        _suppress = false;
+    }
+
     private static void OnPluginComboSelected()
     {
-        if (suppress || pluginCombo == null)
+        if (_suppress || _pluginCombo == null)
             return;
-        SetChoice(FromPluginKey(pluginCombo.GetSelectedKey()), applyGame: true, save: false);
+        SetChoice(FromPluginKey(_pluginCombo.GetSelectedKey()), applyGame: true, save: false);
     }
 
     private static void OnGraphicsComboSelected()
     {
-        if (suppress || graphicsCombo == null)
+        if (_suppress || _graphicsCombo == null)
             return;
-        SetChoice(FromGraphicsKey(graphicsCombo.GetSelectedKey()), applyGame: false, save: false);
+        SetChoice(FromGraphicsKey(_graphicsCombo.GetSelectedKey()), applyGame: false, save: false);
     }
 
     private static void SetChoice(AntiAliasingChoice choice, bool applyGame, bool save)
     {
+        if (choice == AntiAliasingChoice.DLSS && !GpuSupport.CanOfferDlss)
+            choice = AntiAliasingChoice.Off;
         if (Config.Current.AntiAliasing != choice)
         {
             var previousSuppress = Config.SuppressApply;
@@ -148,9 +200,8 @@ internal static class GameAntiAliasing
         else if (applyGame)
             ApplyFromConfig();
 
-        DlssRuntime.NotifyConfigChanged();
-        SelectCombo(pluginCombo, ToPluginKey(Config.Current.AntiAliasing));
-        SelectCombo(graphicsCombo, ToGraphicsKey(Config.Current.AntiAliasing));
+        SelectCombo(_pluginCombo, ToPluginKey(DisplayedChoice(Config.Current.AntiAliasing)));
+        SelectCombo(_graphicsCombo, ToGraphicsKey(DisplayedChoice(Config.Current.AntiAliasing)));
         DebugLog.Write("SetChoice " + choice + " apply=" + applyGame + " save=" + save);
         if (save)
             ConfigStorage.Save(Config.Current);
@@ -159,16 +210,23 @@ internal static class GameAntiAliasing
     private static AntiAliasingChoice ResolveFromGame()
     {
         var mode = MyVideoSettingsManager.CurrentGraphicsSettings.PerformanceSettings.RenderSettings.AntialiasingMode;
-        if (mode == MyAntialiasingMode.FXAA)
-            return AntiAliasingChoice.FXAA;
-        if (Config.Current.AntiAliasing == AntiAliasingChoice.DLSS)
-            return AntiAliasingChoice.DLSS;
-        return AntiAliasingChoice.Off;
+        return mode == MyAntialiasingMode.FXAA
+            ? AntiAliasingChoice.FXAA
+            : Config.Current.AntiAliasing == AntiAliasingChoice.DLSS
+                ? AntiAliasingChoice.DLSS
+                : AntiAliasingChoice.Off;
+    }
+
+    private static AntiAliasingChoice DisplayedChoice(AntiAliasingChoice choice)
+    {
+        if (choice == AntiAliasingChoice.DLSS && !GpuSupport.CanOfferDlss)
+            return AntiAliasingChoice.Off;
+        return choice;
     }
 
     private static void EnsureDlssItem(MyGuiControlCombobox combo)
     {
-        if (combo == null)
+        if (combo == null || !GpuSupport.CanOfferDlss)
             return;
         if (combo.TryGetItemByKey(DlssComboKey) == null)
             combo.AddItem(DlssComboKey, "DLSS");
@@ -180,14 +238,14 @@ internal static class GameAntiAliasing
             return;
         if (combo.GetSelectedKey() == key)
             return;
-        suppress = true;
+        _suppress = true;
         try
         {
             combo.SelectItemByKey(key, sendEvent: false);
         }
         finally
         {
-            suppress = false;
+            _suppress = false;
         }
     }
 
@@ -208,19 +266,21 @@ internal static class GameAntiAliasing
 
     private static AntiAliasingChoice FromGraphicsKey(long key)
     {
-        if (key == DlssComboKey)
-            return AntiAliasingChoice.DLSS;
-        if (key == (long)MyAntialiasingMode.FXAA)
-            return AntiAliasingChoice.FXAA;
-        return AntiAliasingChoice.Off;
+        return key switch
+        {
+            DlssComboKey => AntiAliasingChoice.DLSS,
+            (long)MyAntialiasingMode.FXAA => AntiAliasingChoice.FXAA,
+            _ => AntiAliasingChoice.Off,
+        };
     }
 
     private static AntiAliasingChoice FromPluginKey(long key)
     {
-        if (key == (long)AntiAliasingChoice.DLSS)
-            return AntiAliasingChoice.DLSS;
-        if (key == (long)AntiAliasingChoice.FXAA)
-            return AntiAliasingChoice.FXAA;
-        return AntiAliasingChoice.Off;
+        return key switch
+        {
+            (long)AntiAliasingChoice.DLSS => AntiAliasingChoice.DLSS,
+            (long)AntiAliasingChoice.FXAA => AntiAliasingChoice.FXAA,
+            _ => AntiAliasingChoice.Off,
+        };
     }
 }

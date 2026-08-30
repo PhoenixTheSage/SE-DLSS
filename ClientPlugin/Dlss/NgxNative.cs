@@ -10,7 +10,6 @@ internal static class NgxNative
     internal const int QualityBalanced = 1;
     internal const int QualityMaxQuality = 2;
     internal const int QualityUltraPerformance = 3;
-    internal const int QualityUltraQuality = 4;
     internal const int QualityDlaa = 5;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -59,7 +58,14 @@ internal static class NgxNative
     internal delegate int IsSupportedDelegate();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate int SetModeDelegate(int quality, uint outWidth, uint outHeight, out uint renderWidth, out uint renderHeight, out float sharpness, int preset);
+    internal delegate int SetModeDelegate(
+        int quality,
+        uint outWidth,
+        uint outHeight,
+        out uint renderWidth,
+        out uint renderHeight,
+        out float sharpness,
+        int preset);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate int EvaluateDelegate(ref EvalArgs args);
@@ -85,12 +91,12 @@ internal static class NgxNative
     internal static ShutdownDelegate Shutdown;
     internal static LastErrorDelegate LastErrorPtr;
 
-    private static IntPtr module;
+    private static IntPtr _module;
 
     internal static bool TryLoad(string directory, out string error)
     {
         error = null;
-        if (module != IntPtr.Zero)
+        if (_module != IntPtr.Zero)
             return true;
 
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
@@ -106,28 +112,41 @@ internal static class NgxNative
             return false;
         }
 
-        module = LoadLibrary(path);
-        if (module == IntPtr.Zero)
+        _module = LoadLibrary(path);
+        if (_module == IntPtr.Zero)
         {
             error = "LoadLibrary failed for SeDlssNgx.dll (Win32 " + Marshal.GetLastWin32Error() + ")";
             return false;
         }
 
-        Init = Get<InitDelegate>("SeDlss_Init");
-        IsSupported = Get<IsSupportedDelegate>("SeDlss_IsSupported");
-        SetMode = Get<SetModeDelegate>("SeDlss_SetMode");
-        Evaluate = Get<EvaluateDelegate>("SeDlss_Evaluate");
-        GenerateCameraMotionVectors = Get<GenerateMvDelegate>("SeDlss_GenerateCameraMotionVectors");
-        UpsampleDepth = Get<UpsampleDepthDelegate>("SeDlss_UpsampleDepth");
-        Shutdown = Get<ShutdownDelegate>("SeDlss_Shutdown");
-        LastErrorPtr = Get<LastErrorDelegate>("SeDlss_LastError");
-        if (Init == null || IsSupported == null || SetMode == null || Evaluate == null || Shutdown == null)
+        try
         {
+            Init = Get<InitDelegate>("SeDlss_Init");
+            IsSupported = Get<IsSupportedDelegate>("SeDlss_IsSupported");
+            SetMode = Get<SetModeDelegate>("SeDlss_SetMode");
+            Evaluate = Get<EvaluateDelegate>("SeDlss_Evaluate");
+            GenerateCameraMotionVectors = Get<GenerateMvDelegate>("SeDlss_GenerateCameraMotionVectors");
+            UpsampleDepth = Get<UpsampleDepthDelegate>("SeDlss_UpsampleDepth");
+            Shutdown = Get<ShutdownDelegate>("SeDlss_Shutdown");
+            LastErrorPtr = Get<LastErrorDelegate>("SeDlss_LastError");
+            if (Init != null && IsSupported != null && SetMode != null && Evaluate != null && Shutdown != null)
+                return true;
+
             error = "SeDlssNgx.dll is missing required exports";
+            ReleaseModule();
             return false;
         }
+        catch (Exception e)
+        {
+            error = "SeDlssNgx.dll export binding failed: " + e.GetType().Name + ": " + e.Message;
+            ReleaseModule();
+            return false;
+        }
+    }
 
-        return true;
+    internal static void Unload()
+    {
+        ReleaseModule();
     }
 
     internal static string LastError()
@@ -140,8 +159,26 @@ internal static class NgxNative
 
     private static T Get<T>(string name) where T : class
     {
-        var ptr = GetProcAddress(module, name);
+        var ptr = GetProcAddress(_module, name);
         return ptr == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer<T>(ptr);
+    }
+
+    private static void ReleaseModule()
+    {
+        Init = null;
+        IsSupported = null;
+        SetMode = null;
+        Evaluate = null;
+        GenerateCameraMotionVectors = null;
+        UpsampleDepth = null;
+        Shutdown = null;
+        LastErrorPtr = null;
+
+        if (_module == IntPtr.Zero)
+            return;
+
+        FreeLibrary(_module);
+        _module = IntPtr.Zero;
     }
 
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -149,4 +186,8 @@ internal static class NgxNative
 
     [DllImport("kernel32", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+    [DllImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FreeLibrary(IntPtr hModule);
 }

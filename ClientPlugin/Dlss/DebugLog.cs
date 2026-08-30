@@ -11,8 +11,7 @@ using VRage.Utils;
 namespace ClientPlugin.Dlss;
 
 /// <summary>
-/// File logger compiled into Debug builds only. Call sites are stripped from Release.
-/// Writes next to SpaceEngineers.log under the game user-data folder.
+/// Writes a debug-only log beside SpaceEngineers.log; call sites are omitted from Release builds.
 /// </summary>
 public static class DebugLog
 {
@@ -22,16 +21,16 @@ public static class DebugLog
     public static string FilePath { get; private set; }
     public static string NativeFilePath { get; private set; }
 
-    private static readonly object Gate = new object();
-    private static readonly Dictionary<string, string> lastFrameByCaller = new Dictionary<string, string>();
-    private static StreamWriter writer;
+    private static readonly object Gate = new();
+    private static readonly Dictionary<string, string> LastFrameByCaller = new();
+    private static StreamWriter _writer;
 
     [Conditional("DEBUG")]
     public static void Open()
     {
         lock (Gate)
         {
-            if (writer != null)
+            if (_writer != null)
                 return;
 
             var dir = ResolveUserDataDir();
@@ -40,15 +39,15 @@ public static class DebugLog
                 Directory.CreateDirectory(dir);
                 FilePath = Path.Combine(dir, FileName);
                 NativeFilePath = Path.Combine(dir, NativeFileName);
-                writer = new StreamWriter(FilePath, false, new UTF8Encoding(false))
+                _writer = new StreamWriter(FilePath, false, new UTF8Encoding(false))
                 {
                     AutoFlush = true
                 };
-                writer.WriteLine("Space Engineers DLSS debug log");
-                writer.WriteLine("opened {0:o}", DateTime.Now);
-                writer.WriteLine("folder {0}", dir);
-                writer.WriteLine("native {0}", NativeFilePath);
-                writer.WriteLine();
+                _writer.WriteLine("Space Engineers DLSS debug log");
+                _writer.WriteLine("opened {0:o}", DateTime.Now);
+                _writer.WriteLine("folder {0}", dir);
+                _writer.WriteLine("native {0}", NativeFilePath);
+                _writer.WriteLine();
                 try
                 {
                     MyLog.Default.WriteLine("DLSS debug log: " + FilePath);
@@ -62,7 +61,7 @@ public static class DebugLog
             {
                 FilePath = null;
                 NativeFilePath = null;
-                writer = null;
+                _writer = null;
                 try
                 {
                     MyLog.Default.WriteLine("DLSS debug log failed to open: " + e.Message);
@@ -92,20 +91,20 @@ public static class DebugLog
     {
         lock (Gate)
         {
-            if (writer == null)
+            if (_writer == null)
                 return;
             try
             {
-                writer.WriteLine();
-                writer.WriteLine("closed {0:o}", DateTime.Now);
-                writer.Dispose();
+                _writer.WriteLine();
+                _writer.WriteLine("closed {0:o}", DateTime.Now);
+                _writer.Dispose();
             }
             catch
             {
                 // ignored
             }
-            writer = null;
-            lastFrameByCaller.Clear();
+            _writer = null;
+            LastFrameByCaller.Clear();
         }
     }
 
@@ -115,33 +114,32 @@ public static class DebugLog
             return;
         lock (Gate)
         {
-            if (writer == null)
+            if (_writer == null)
                 return;
             if (!force)
             {
-                string previous;
-                if (lastFrameByCaller.TryGetValue(caller, out previous) && previous == message)
+                if (LastFrameByCaller.TryGetValue(caller, out var previous) && previous == message)
                     return;
-                lastFrameByCaller[caller] = message;
+                LastFrameByCaller[caller] = message;
             }
 
             try
             {
-                writer.Write(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture));
-                writer.Write(" ");
-                writer.WriteLine(message);
+                _writer.Write(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture));
+                _writer.Write(" ");
+                _writer.WriteLine(message);
             }
             catch
             {
                 try
                 {
-                    writer.Dispose();
+                    _writer.Dispose();
                 }
                 catch
                 {
                     // ignored
                 }
-                writer = null;
+                _writer = null;
             }
         }
     }

@@ -4,8 +4,7 @@ using VRageRender;
 
 namespace ClientPlugin.Patches;
 
-// Keen's DRS Present path P/Invokes PSNative.dll, which is not in the PC Bin64 folder.
-// We no longer enable console DRS, but a leftover cfg flag would still crash Present.
+// Bypass Keen's monitor probe, which P/Invokes the unavailable PSNative.dll.
 [HarmonyPatch(typeof(MyRender11), nameof(MyRender11.GetDeviceVSyncMode))]
 internal static class GetDeviceVSyncModePatch
 {

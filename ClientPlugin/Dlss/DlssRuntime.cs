@@ -17,27 +17,34 @@ public static class DlssRuntime
     public static bool LastEvaluateFailed { get; private set; }
     public static bool EvaluatedThisFrame { get; set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
-    private static bool outputDepthReady;
-    private static ICustomTexture ldrTexture;
-    private static PersistentLdrTarget ldrOutput;
+    private static bool _outputDepthReady;
+    private static ICustomTexture _ldrTexture;
+    private static PersistentLdrTarget _ldrOutput;
 
-    private static bool configChanged = true;
-    private static bool resetHistory = true;
-    private static int consecutiveEvaluateFails;
-    private static Vector2I cachedOutput;
+    private static bool _configChanged = true;
+    private static bool _resetHistory = true;
+    private static int _consecutiveEvaluateFails;
+    private static Vector2I _cachedOutput;
 #if DEBUG
-    private static string lastPrepareLog;
+    private static string _lastPrepareLog;
 #endif
-    private static readonly float[] invViewProj = new float[16];
-    private static readonly float[] unjitteredViewProj = new float[16];
-    private static readonly float[] prevViewProj = new float[16];
+    private static readonly float[] InvViewProj = new float[16];
+    private static readonly float[] UnjitteredViewProj = new float[16];
+    private static readonly float[] PrevViewProj = new float[16];
 
     public static bool WantsDlss
     {
         get
         {
             var config = Config.Current;
-            return config != null && config.AntiAliasing == AntiAliasingChoice.DLSS;
+            if (config == null || config.AntiAliasing != AntiAliasingChoice.DLSS)
+                return false;
+            GpuSupport.TryProbe();
+            if (!GpuSupport.CanAttemptDlss)
+                return false;
+            if (NgxHost.SupportKnown && !NgxHost.IsSupported)
+                return false;
+            return true;
         }
     }
 
@@ -45,15 +52,17 @@ public static class DlssRuntime
 
     public static void NotifyConfigChanged()
     {
-        configChanged = true;
-        resetHistory = true;
-        consecutiveEvaluateFails = 0;
+        _configChanged = true;
+        _resetHistory = true;
+        _consecutiveEvaluateFails = 0;
         LastEvaluateFailed = false;
         Jitter.Reset();
         DisableConsoleDrs();
-        DebugLog.Write("NotifyConfigChanged aa=" + (Config.Current != null ? Config.Current.AntiAliasing.ToString() : "?") +
-                       " mode=" + (Config.Current != null ? Config.Current.Mode.ToString() : "?") +
-                       " model=" + (Config.Current != null ? Config.Current.Model.ToString() : "?"));
+        NgxHost.AllowRetry();
+        DebugLog.Write(
+            "NotifyConfigChanged aa=" + (Config.Current != null ? Config.Current.AntiAliasing.ToString() : "?") +
+            " mode=" + (Config.Current != null ? Config.Current.Mode.ToString() : "?") +
+            " model=" + (Config.Current != null ? Config.Current.Model.ToString() : "?"));
     }
 
     public static void Shutdown()
@@ -64,9 +73,15 @@ public static class DlssRuntime
         ReleaseOutputDepth();
         ReleaseLdrOutput();
         InternalWidth = InternalHeight = OutputWidth = OutputHeight = 0;
-        cachedOutput = default(Vector2I);
+        _cachedOutput = default(Vector2I);
+        _configChanged = true;
+        _resetHistory = true;
         LastEvaluateFailed = false;
-        consecutiveEvaluateFails = 0;
+        EvaluatedThisFrame = false;
+        _consecutiveEvaluateFails = 0;
+#if DEBUG
+        _lastPrepareLog = null;
+#endif
     }
 
     public static void ApplyInternalResolution()
@@ -77,8 +92,7 @@ public static class DlssRuntime
         if (MyRender11.ResolutionI == target)
             return;
 
-        // SetDRS is Keen's GBuffer/HBAO resize (screenshots use it too). It is not the
-        // console DRS feature: it does not touch DRScaling, Present, or PSNative.dll.
+        // Keen's SetDRS resizes GBuffer/HBAO without using the console DRS Present path.
         DisableConsoleDrs();
         DebugLog.Write("SetDRS internal " + MyRender11.ResolutionI + " -> " + target);
         MyRender11.SetDRS(target);
@@ -118,14 +132,14 @@ public static class DlssRuntime
         var size = InternalWidth > 0 && InternalHeight > 0
             ? new Vector2I(InternalWidth, InternalHeight)
             : MyRender11.ResolutionI;
-        if (size.X > 0 && size.Y > 0)
+        if (size is { X: > 0, Y: > 0 })
             MyRender11.ViewportResolution = size;
     }
 
     public static void RestoreViewportToOutput()
     {
         var output = OutputResolution();
-        if (output.X > 0 && output.Y > 0)
+        if (output is { X: > 0, Y: > 0 })
             MyRender11.ViewportResolution = output;
     }
 
@@ -141,8 +155,14 @@ public static class DlssRuntime
         data.Screen.Resolution = new Vector2(output.X, output.Y);
         MyCommon.FrameConstantsData = data;
         var mapping = MyMapping.MapDiscard(MyCommon.FrameConstants);
-        mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
-        mapping.Unmap();
+        try
+        {
+            mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
+        }
+        finally
+        {
+            mapping.Unmap();
+        }
     }
 
     public static bool SettingsMatchOutput(int width, int height)
@@ -168,8 +188,7 @@ public static class DlssRuntime
         RememberNativeOutput();
     }
 
-    // Backbuffer.Size aliases internal ResolutionI after SetDRS. HUD must use
-    // the DXGI size, and must not composite onto an internal scene RT.
+    // Backbuffer.Size follows internal ResolutionI after SetDRS; HUD targets need the DXGI size.
     public static bool TryGetHudTargetSize(IRtvBindable target, out Vector2I size)
     {
         size = OutputPixelSize();
@@ -182,14 +201,14 @@ public static class DlssRuntime
 
     public static void BeginFrameResources()
     {
-        outputDepthReady = false;
+        _outputDepthReady = false;
     }
 
     public static void ReleaseOutputDepth()
     {
         OutputDepthThisFrame?.Release();
         OutputDepthThisFrame = null;
-        outputDepthReady = false;
+        _outputDepthReady = false;
     }
 
     public static IBorrowedCustomTexture AcquireLdrOutput()
@@ -197,23 +216,23 @@ public static class DlssRuntime
         var output = OutputResolution();
         if (output.X <= 0 || output.Y <= 0)
             return null;
-        if (ldrOutput != null && ldrOutput.Size.X == output.X && ldrOutput.Size.Y == output.Y)
-            return ldrOutput;
+        if (_ldrOutput != null && _ldrOutput.Size.X == output.X && _ldrOutput.Size.Y == output.Y)
+            return _ldrOutput;
 
         ReleaseLdrOutput();
-        ldrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.LdrUpscale", output.X, output.Y, 1, 0);
-        if (ldrTexture == null)
+        _ldrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.LdrUpscale", output.X, output.Y);
+        if (_ldrTexture == null)
             return null;
-        ldrOutput = new PersistentLdrTarget(ldrTexture);
+        _ldrOutput = new PersistentLdrTarget(_ldrTexture);
         DebugLog.Write("LDR output " + output.X + "x" + output.Y);
-        return ldrOutput;
+        return _ldrOutput;
     }
 
     public static void ReleaseLdrOutput()
     {
-        ldrOutput = null;
-        if (ldrTexture != null)
-            MyManagers.CustomTextures.DisposeTex(ref ldrTexture);
+        _ldrOutput = null;
+        if (_ldrTexture != null)
+            MyManagers.CustomTextures.DisposeTex(ref _ldrTexture);
     }
 
     public static IBorrowedDepthStencilTexture TryAcquireOutputDepth(IDepthStencil source, Vector2I size)
@@ -221,17 +240,17 @@ public static class DlssRuntime
         if (source == null || size.X <= 0 || size.Y <= 0)
             return null;
 
-        bool sizeOk = OutputDepthThisFrame != null &&
+        var sizeOk = OutputDepthThisFrame != null &&
             OutputDepthThisFrame.Size.X == size.X &&
             OutputDepthThisFrame.Size.Y == size.Y;
-        if (sizeOk && outputDepthReady)
+        if (sizeOk && _outputDepthReady)
             return OutputDepthThisFrame;
 
         if (!sizeOk)
         {
             ReleaseOutputDepth();
             var dest = MyManagers.RwTexturesPool.BorrowDepthStencil(
-                "DLSS.LdrDepth", size.X, size.Y, IsHqDepth(source), 1, 0);
+                "DLSS.LdrDepth", size.X, size.Y, IsHqDepth(source));
             if (dest == null || dest.Resource == null)
                 return null;
             OutputDepthThisFrame = dest;
@@ -246,26 +265,34 @@ public static class DlssRuntime
             return null;
         }
 
+        bool upsampled;
         rc.ClearState();
-        if (!NgxHost.TryUpsampleDepth(
+        try
+        {
+            upsampled = NgxHost.TryUpsampleDepth(
                 device.NativePointer,
                 rc.DeviceContext.NativePointer,
                 source.Resource.NativePointer,
-                OutputDepthThisFrame.Resource.NativePointer))
+                OutputDepthThisFrame.Resource.NativePointer);
+        }
+        finally
+        {
+            rc.ClearState();
+        }
+
+        if (!upsampled)
         {
             ReleaseOutputDepth();
             return null;
         }
 
-        rc.ClearState();
-        outputDepthReady = true;
+        _outputDepthReady = true;
         return OutputDepthThisFrame;
     }
 
     private static bool IsHqDepth(IDepthStencil source)
     {
-        var tex = source.Resource as Texture2D;
-        if (tex == null)
+        if (source.Resource is not Texture2D tex)
             return true;
         var format = tex.Description.Format;
         return format == SharpDX.DXGI.Format.R32G8X24_Typeless ||
@@ -276,7 +303,14 @@ public static class DlssRuntime
     {
         if (!WantsDlss)
         {
-            if (!NgxHost.IsLoaded)
+            if (Config.Current != null && Config.Current.AntiAliasing == AntiAliasingChoice.DLSS)
+            {
+                if (GpuSupport.Probed && !GpuSupport.IsNvidia)
+                    NgxHost.LastError = GpuSupport.UnsupportedReason;
+                else if (NgxHost.SupportKnown && !NgxHost.IsSupported && string.IsNullOrEmpty(NgxHost.LastError))
+                    NgxHost.LastError = "NGX reports Super Sampling is not available on this GPU";
+            }
+            else if (!NgxHost.IsLoaded)
                 NgxHost.LastError = "DLSS is not the selected anti-aliasing mode";
             return false;
         }
@@ -306,9 +340,12 @@ public static class DlssRuntime
         if (OutputWidth <= 0 || OutputHeight <= 0)
             return false;
 
-        uint renderW;
-        uint renderH;
-        if (!NgxHost.TrySetMode(Config.Current.Mode, (uint)OutputWidth, (uint)OutputHeight, out renderW, out renderH))
+        if (!NgxHost.TrySetMode(
+                Config.Current.Mode,
+                (uint)OutputWidth,
+                (uint)OutputHeight,
+                out var renderW,
+                out var renderH))
         {
             var scale = NgxHost.FallbackScale(Config.Current.Mode);
             renderW = (uint)Math.Max(1, MathHelper.RoundToInt(OutputWidth * scale));
@@ -321,9 +358,9 @@ public static class DlssRuntime
         var prepare = "TryPrepareFrame live=" + IsLive + " ready=" + NgxHost.IsReady +
                       " " + InternalWidth + "x" + InternalHeight + " -> " + OutputWidth + "x" + OutputHeight +
                       " " + (NgxHost.LastError ?? "");
-        if (lastPrepareLog != prepare)
+        if (_lastPrepareLog != prepare)
         {
-            lastPrepareLog = prepare;
+            _lastPrepareLog = prepare;
             DebugLog.Write(prepare);
         }
 #endif
@@ -343,23 +380,20 @@ public static class DlssRuntime
 
     public static Vector2I OutputResolution()
     {
-        // MyBackbuffer.Size aliases m_resolution (internal after SetDRS). The DXGI
-        // texture and swapchain mode stay at the real output, including DLAA 1:1.
-        if (cachedOutput.X > 0 && cachedOutput.Y > 0)
-            return cachedOutput;
+        // Backbuffer.Size is internal after SetDRS; DXGI and device settings retain the output size.
+        if (_cachedOutput is { X: > 0, Y: > 0 })
+            return _cachedOutput;
         RememberNativeOutput();
-        if (cachedOutput.X > 0 && cachedOutput.Y > 0)
-            return cachedOutput;
-        var swap = MyRender11.m_swapchain;
-        if (swap != null)
+        if (_cachedOutput is { X: > 0, Y: > 0 })
+            return _cachedOutput;
+        if (MyRender11.m_swapchain is { } swap)
         {
             var mode = swap.Description.ModeDescription;
-            if (mode.Width > 0 && mode.Height > 0)
+            if (mode is { Width: > 0, Height: > 0 })
                 return new Vector2I(mode.Width, mode.Height);
         }
-        Vector2I candidate;
         var settings = MyRender11.DeviceSettings;
-        if (TryNativeSize(settings.BackBufferWidth, settings.BackBufferHeight, out candidate))
+        if (TryNativeSize(settings.BackBufferWidth, settings.BackBufferHeight, out var candidate))
             return candidate;
         return MyRender11.ViewportResolution;
     }
@@ -368,17 +402,16 @@ public static class DlssRuntime
     {
         try
         {
-            var tex = MyRender11.Backbuffer?.Resource as Texture2D;
-            if (tex != null)
+            if (MyRender11.Backbuffer?.Resource is Texture2D tex)
             {
                 var desc = tex.Description;
-                if (desc.Width > 0 && desc.Height > 0)
+                if (desc is { Width: > 0, Height: > 0 })
                     return new Vector2I(desc.Width, desc.Height);
             }
         }
-        catch
+        catch (Exception e)
         {
-            // ignored
+            DebugLog.WriteFrame("Swapchain buffer query failed: " + e.GetType().Name + ": " + e.Message);
         }
         return default(Vector2I);
     }
@@ -386,13 +419,8 @@ public static class DlssRuntime
     private static void RememberNativeOutput()
     {
         var dxgi = SwapchainBufferSize();
-        if (dxgi.X > 0 && dxgi.Y > 0)
-            cachedOutput = dxgi;
-    }
-
-    private static bool TryNativeSize(Vector2I size, out Vector2I native)
-    {
-        return TryNativeSize(size.X, size.Y, out native);
+        if (dxgi is { X: > 0, Y: > 0 })
+            _cachedOutput = dxgi;
     }
 
     private static bool TryNativeSize(int width, int height, out Vector2I native)
@@ -406,11 +434,11 @@ public static class DlssRuntime
         return true;
     }
 
-    public static bool TryEvaluate(IResource destination, ISrvBindable source, ISrvBindable exposure)
+    public static bool TryEvaluate(IResource destination, ISrvBindable source)
     {
-        if (!IsLive || consecutiveEvaluateFails >= 3)
+        if (!IsLive || _consecutiveEvaluateFails >= 3)
         {
-            DebugLog.WriteFrame("TryEvaluate skipped live=" + IsLive + " fails=" + consecutiveEvaluateFails);
+            DebugLog.WriteFrame("TryEvaluate skipped live=" + IsLive + " fails=" + _consecutiveEvaluateFails);
             return false;
         }
         LastEvaluateFailed = false;
@@ -435,28 +463,32 @@ public static class DlssRuntime
 
         try
         {
-            IntPtr mvec = IntPtr.Zero;
+            var mvec = IntPtr.Zero;
             if (Jitter.HasPrevious)
             {
-                Jitter.CopyToArray(Jitter.JitteredInvViewProjection, invViewProj);
-                Jitter.CopyToArray(Jitter.UnjitteredViewProjection, unjitteredViewProj);
-                Jitter.CopyToArray(Jitter.PreviousViewProjection, prevViewProj);
+                Jitter.CopyToArray(Jitter.JitteredInvViewProjection, InvViewProj);
+                Jitter.CopyToArray(Jitter.UnjitteredViewProjection, UnjitteredViewProj);
+                Jitter.CopyToArray(Jitter.PreviousViewProjection, PrevViewProj);
                 mvec = NgxHost.GenerateCameraMotionVectors(
                     device.NativePointer,
                     rc.DeviceContext.NativePointer,
                     depth.NativePointer,
                     (uint)InternalWidth,
                     (uint)InternalHeight,
-                    invViewProj,
-                    unjitteredViewProj,
-                    prevViewProj);
+                    InvViewProj,
+                    UnjitteredViewProj,
+                    PrevViewProj);
             }
 
-            int reset = resetHistory || configChanged || !Jitter.HasPrevious || Jitter.ConsumeCameraCut() ? 1 : 0;
-            configChanged = false;
-            resetHistory = false;
+            var motionVectorsFailed = Jitter.HasPrevious && mvec == IntPtr.Zero;
+            var reset = _resetHistory || _configChanged || !Jitter.HasPrevious || motionVectorsFailed ||
+                        Jitter.ConsumeCameraCut()
+                ? 1
+                : 0;
+            _configChanged = false;
+            _resetHistory = false;
 
-            bool ok = NgxHost.Evaluate(
+            var ok = NgxHost.Evaluate(
                 rc.DeviceContext.NativePointer,
                 color.NativePointer,
                 depth.NativePointer,
@@ -471,17 +503,18 @@ public static class DlssRuntime
                 (uint)InternalHeight);
             if (!ok)
             {
+                _resetHistory = true;
                 LastEvaluateFailed = true;
-                consecutiveEvaluateFails++;
+                _consecutiveEvaluateFails++;
                 MyLog.Default.Warning("DLSS evaluate failed: " + NgxHost.LastError);
-                DebugLog.Write("TryEvaluate fail #" + consecutiveEvaluateFails +
+                DebugLog.Write("TryEvaluate fail #" + _consecutiveEvaluateFails +
                                " dest=" + destination.Size + " src=" + source.Size + " " + NgxHost.LastError);
-                if (consecutiveEvaluateFails >= 3)
+                if (_consecutiveEvaluateFails >= 3)
                     MyLog.Default.Warning("DLSS: stopping evaluate until anti-aliasing settings change");
             }
             else
             {
-                consecutiveEvaluateFails = 0;
+                _consecutiveEvaluateFails = 0;
                 DebugLog.WriteFrame("TryEvaluate ok dest=" + destination.Size.X + "x" + destination.Size.Y +
                                     " src=" + source.Size.X + "x" + source.Size.Y +
                                     " reset=" + reset + " mv=" + (mvec != IntPtr.Zero));
@@ -491,8 +524,9 @@ public static class DlssRuntime
         }
         catch (Exception e)
         {
+            _resetHistory = true;
             LastEvaluateFailed = true;
-            consecutiveEvaluateFails = 3;
+            _consecutiveEvaluateFails = 3;
             NgxHost.LastError = e.GetType().Name + ": " + e.Message;
             MyLog.Default.Error("DLSS evaluate threw: " + e);
             DebugLog.Write("TryEvaluate threw " + e);
@@ -500,7 +534,7 @@ public static class DlssRuntime
         }
         finally
         {
-            // NGX and the motion-vector pass write the D3D11 context behind Keen's state cache.
+            // Native passes bypass Keen's D3D11 state cache.
             rc.ClearState();
         }
     }
@@ -511,8 +545,9 @@ public static class DlssRuntime
         {
             return VRage.FileSystem.MyFileSystem.UserDataPath;
         }
-        catch
+        catch (Exception e)
         {
+            DebugLog.Write("User-data path lookup failed: " + e.GetType().Name + ": " + e.Message);
             return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         }
     }

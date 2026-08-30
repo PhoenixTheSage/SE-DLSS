@@ -17,31 +17,52 @@ internal static class BillboardOutputPass
     private const int PostPpBucket = 4;
 
     [ThreadStatic]
-    private static bool drawingPostPp;
+    private static bool _drawingPostPp;
 
-    private static bool drewHudThisScene;
-    private static readonly object snapshotLock = new object();
-    private static readonly List<MyBillboard> pendingAdds = new List<MyBillboard>(512);
-    private static readonly List<MyBillboard> uniqueScratch = new List<MyBillboard>(512);
-    private static List<MyBillboard> published = new List<MyBillboard>(512);
-    private static List<MyBillboard> publishScratch = new List<MyBillboard>(512);
-    private static readonly List<MyBillboard> snapshot = new List<MyBillboard>(512);
-    private static readonly HashSet<MyBillboard> seen = new HashSet<MyBillboard>();
-    private static readonly int[] blendHistogram = new int[8];
-    private static MatrixD pendingCameraWorld;
-    private static MatrixD publishedCameraWorld;
-    private static bool hasPendingCamera;
-    private static bool hasPublishedCamera;
-    private static int lastSubmitTick;
+    private static bool _drewHudThisScene;
+    private static readonly object SnapshotLock = new();
+    private static readonly List<MyBillboard> PendingAdds = new(512);
+    private static readonly List<MyBillboard> UniqueScratch = new(512);
+    private static List<MyBillboard> _published = new(512);
+    private static List<MyBillboard> _publishScratch = new(512);
+    private static readonly List<MyBillboard> Snapshot = new(512);
+    private static readonly HashSet<MyBillboard> Seen = [];
+    private static readonly int[] BlendHistogram = new int[8];
+    private static MatrixD _pendingCameraWorld;
+    private static MatrixD _publishedCameraWorld;
+    private static bool _hasPendingCamera;
+    private static bool _hasPublishedCamera;
+    private static int _lastSubmitTick;
 
-    // Keep the last coherent HUD frame across early ApplyAction calls (empty
-    // pendingAdds). Expire it once Rich HUD actually stops submitting, or the
-    // last cursor/quad stays frozen on screen.
+    // Retain the last complete HUD frame across empty submissions, then expire it to prevent frozen overlays.
     private const int StaleHudMs = 200;
 
     public static void BeginDraw()
     {
-        drewHudThisScene = false;
+        _drewHudThisScene = false;
+    }
+
+    public static void Reset()
+    {
+        _drawingPostPp = false;
+        _drewHudThisScene = false;
+        _lastHudLog = null;
+
+        lock (SnapshotLock)
+        {
+            PendingAdds.Clear();
+            UniqueScratch.Clear();
+            _published.Clear();
+            _publishScratch.Clear();
+            Snapshot.Clear();
+            Seen.Clear();
+            Array.Clear(BlendHistogram, 0, BlendHistogram.Length);
+            _pendingCameraWorld = default(MatrixD);
+            _publishedCameraWorld = default(MatrixD);
+            _hasPendingCamera = false;
+            _hasPublishedCamera = false;
+            _lastSubmitTick = 0;
+        }
     }
 
     public static void PublishCompletedFrame()
@@ -50,24 +71,22 @@ internal static class BillboardOutputPass
             return;
 
         int count;
-        lock (snapshotLock)
+        lock (SnapshotLock)
         {
-            if (pendingAdds.Count == 0)
+            if (PendingAdds.Count == 0)
                 return;
 
-            DedupeInto(pendingAdds, uniqueScratch);
-            pendingAdds.Clear();
-            FreezeInto(uniqueScratch, publishScratch);
+            DedupeInto(PendingAdds, UniqueScratch);
+            PendingAdds.Clear();
+            FreezeInto(UniqueScratch, _publishScratch);
 
-            var swap = published;
-            published = publishScratch;
-            publishScratch = swap;
+            (_published, _publishScratch) = (_publishScratch, _published);
 
-            publishedCameraWorld = pendingCameraWorld;
-            hasPublishedCamera = hasPendingCamera;
-            hasPendingCamera = false;
+            _publishedCameraWorld = _pendingCameraWorld;
+            _hasPublishedCamera = _hasPendingCamera;
+            _hasPendingCamera = false;
             NoteHudSubmitLocked();
-            count = published.Count;
+            count = _published.Count;
         }
 
         LogHudOnce("Published complete PostPP frame count=" + count);
@@ -77,10 +96,10 @@ internal static class BillboardOutputPass
     {
         if (!DlssRuntime.IsLive || !IsPostPp(billboard))
             return;
-        lock (snapshotLock)
+        lock (SnapshotLock)
         {
             CapturePendingCameraIfNeeded();
-            pendingAdds.Add(billboard);
+            PendingAdds.Add(billboard);
             NoteHudSubmitLocked();
         }
     }
@@ -89,15 +108,15 @@ internal static class BillboardOutputPass
     {
         if (!DlssRuntime.IsLive || billboards == null)
             return;
-        lock (snapshotLock)
+        lock (SnapshotLock)
         {
-            bool added = false;
+            var added = false;
             foreach (var billboard in billboards)
             {
                 if (!IsPostPp(billboard))
                     continue;
                 CapturePendingCameraIfNeeded();
-                pendingAdds.Add(billboard);
+                PendingAdds.Add(billboard);
                 added = true;
             }
             if (added)
@@ -110,7 +129,7 @@ internal static class BillboardOutputPass
         LogHudOnce("RenderPostPP enter live=" + DlssRuntime.IsLive +
                    " target=" + (target != null ? target.Size.ToString() : "null") +
                    " pending=" + PendingCount());
-        if (!DlssRuntime.IsLive || drawingPostPp || rc == null || target == null)
+        if (!DlssRuntime.IsLive || _drawingPostPp || rc == null || target == null)
             return false;
 
         BindUnjitteredFrameConstants();
@@ -119,7 +138,7 @@ internal static class BillboardOutputPass
 
     public static void TryDrawAfterSceneBlit()
     {
-        if (!DlssRuntime.IsLive || drewHudThisScene)
+        if (!DlssRuntime.IsLive || _drewHudThisScene)
             return;
         var dest = MyRender11.Backbuffer;
         var rc = MyRender11.RC;
@@ -131,14 +150,14 @@ internal static class BillboardOutputPass
 
     private static bool TryDrawCaptured(MyRenderContext rc, IRtvBindable target, string reason)
     {
-        if (drewHudThisScene || drawingPostPp || rc == null || target == null)
+        if (_drewHudThisScene || _drawingPostPp || rc == null || target == null)
             return true;
 
-        int captured = CaptureForDraw();
+        var captured = CaptureForDraw();
         if (captured == 0)
             return true;
 
-        int prepared = PrepareFromSnapshot();
+        var prepared = PrepareFromSnapshot();
         if (prepared > 0)
         {
             MyBillboardRenderer.GatherInternal(rc);
@@ -146,10 +165,10 @@ internal static class BillboardOutputPass
         }
 
         FillHistogram();
-        Vector2I output = DlssRuntime.OutputPixelSize();
+        var output = DlssRuntime.OutputPixelSize();
         LogHudOnce(reason + " captured=" + captured +
-                   " indexed=" + snapshot.Count +
-                   " postpp=" + blendHistogram[PostPpBucket] +
+                   " indexed=" + Snapshot.Count +
+                   " postpp=" + BlendHistogram[PostPpBucket] +
                    " dest=" + target.Size +
                    " output=" + output +
                    " " + DescribeSample() +
@@ -158,28 +177,33 @@ internal static class BillboardOutputPass
         if (!HasBucket(PostPpBucket))
             return true;
 
-        Vector2I viewport;
-        if (!DlssRuntime.TryGetHudTargetSize(target, out viewport))
+        if (!DlssRuntime.TryGetHudTargetSize(target, out var viewport))
         {
             LogHudOnce(reason + " skip internal dest=" + target.Size +
                        " output=" + DlssRuntime.OutputPixelSize());
             return true;
         }
 
-        drawingPostPp = true;
+        _drawingPostPp = true;
         try
         {
             rc.SetViewport(0f, 0f, viewport.X, viewport.Y);
             rc.SetBlendState(MyBlendStateManager.BlendAlphaPremult);
             rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
             rc.SetRtv(target);
-            MyBillboardRenderer.Render(rc, null, MyBillboardRenderer.m_bucketBatches[PostPpBucket], false, true);
-            rc.SetRtvNull();
-            drewHudThisScene = true;
+            try
+            {
+                MyBillboardRenderer.Render(rc, null, MyBillboardRenderer.m_bucketBatches[PostPpBucket], false, true);
+                _drewHudThisScene = true;
+            }
+            finally
+            {
+                rc.SetRtvNull();
+            }
         }
         finally
         {
-            drawingPostPp = false;
+            _drawingPostPp = false;
         }
         return true;
     }
@@ -212,95 +236,111 @@ internal static class BillboardOutputPass
             DebugLog.WriteFrame("Billboard LDR upsampled depth dest=" + target.Size + " src=" + sceneDepth.Size);
             rc.SetDepthStencilState(MyDepthStencilStateManager.DefaultDepthState);
             rc.SetRtv(outputDepth.DsvRoDepth, target);
-            MyBillboardRenderer.Render(rc, outputDepth.SrvDepth, MyBillboardRenderer.m_bucketBatches[bucket], false, true);
-            rc.SetRtvNull();
+            try
+            {
+                MyBillboardRenderer.Render(
+                    rc,
+                    outputDepth.SrvDepth,
+                    MyBillboardRenderer.m_bucketBatches[bucket],
+                    false,
+                    true);
+            }
+            finally
+            {
+                rc.SetRtvNull();
+            }
             return true;
         }
 
         DebugLog.WriteFrame("Billboard LDR no-depth fallback dest=" + target.Size + " depth=" + sceneDepth.Size);
         rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
         rc.SetRtv(target);
-        MyBillboardRenderer.Render(rc, depthRead, MyBillboardRenderer.m_bucketBatches[bucket], false, true);
-        rc.SetRtvNull();
+        try
+        {
+            MyBillboardRenderer.Render(rc, depthRead, MyBillboardRenderer.m_bucketBatches[bucket], false, true);
+        }
+        finally
+        {
+            rc.SetRtvNull();
+        }
         return true;
     }
 
     private static int PendingCount()
     {
-        lock (snapshotLock)
-            return pendingAdds.Count;
+        lock (SnapshotLock)
+            return PendingAdds.Count;
     }
 
     private static int CaptureForDraw()
     {
-        MatrixD sourceCamera = default;
+        MatrixD sourceCamera;
         bool reanchor;
-        lock (snapshotLock)
+        lock (SnapshotLock)
         {
             if (HudSnapshotIsStaleLocked())
             {
-                LogHudOnce("Expired stale PostPP snapshot count=" + published.Count);
+                LogHudOnce("Expired stale PostPP snapshot count=" + _published.Count);
                 ClearPublishedLocked();
-                snapshot.Clear();
+                Snapshot.Clear();
                 return 0;
             }
 
-            FreezeInto(published, snapshot);
-            sourceCamera = publishedCameraWorld;
-            reanchor = hasPublishedCamera;
+            FreezeInto(_published, Snapshot);
+            sourceCamera = _publishedCameraWorld;
+            reanchor = _hasPublishedCamera;
         }
 
         if (reanchor)
             ReanchorToRenderCamera(sourceCamera);
-        return snapshot.Count;
+        return Snapshot.Count;
     }
 
     private static void NoteHudSubmitLocked()
     {
-        lastSubmitTick = Environment.TickCount;
+        _lastSubmitTick = Environment.TickCount;
     }
 
     private static bool HudSnapshotIsStaleLocked()
     {
-        if (published.Count == 0 || pendingAdds.Count > 0)
+        if (_published.Count == 0 || PendingAdds.Count > 0)
             return false;
         unchecked
         {
-            return Environment.TickCount - lastSubmitTick > StaleHudMs;
+            return Environment.TickCount - _lastSubmitTick > StaleHudMs;
         }
     }
 
     private static void ClearPublishedLocked()
     {
-        published.Clear();
-        hasPublishedCamera = false;
-        hasPendingCamera = false;
+        _published.Clear();
+        _hasPublishedCamera = false;
+        _hasPendingCamera = false;
     }
 
     private static bool IsPostPp(MyBillboard billboard)
     {
-        return billboard != null && billboard.BlendType == MyBillboard.BlendTypeEnum.PostPP;
+        return billboard is { BlendType: MyBillboard.BlendTypeEnum.PostPP };
     }
 
     private static void CapturePendingCameraIfNeeded()
     {
-        if (hasPendingCamera)
+        if (_hasPendingCamera)
             return;
-        var camera = MyAPIGateway.Session != null ? MyAPIGateway.Session.Camera : null;
+        var camera = MyAPIGateway.Session?.Camera;
         if (camera == null)
             return;
-        pendingCameraWorld = camera.WorldMatrix;
-        hasPendingCamera = true;
+        _pendingCameraWorld = camera.WorldMatrix;
+        _hasPendingCamera = true;
     }
 
     private static void DedupeInto(List<MyBillboard> source, List<MyBillboard> dest)
     {
         dest.Clear();
-        seen.Clear();
-        for (int i = 0; i < source.Count; i++)
+        Seen.Clear();
+        foreach (var billboard in source)
         {
-            var billboard = source[i];
-            if (billboard == null || !seen.Add(billboard))
+            if (billboard == null || !Seen.Add(billboard))
                 continue;
             dest.Add(billboard);
         }
@@ -311,7 +351,7 @@ internal static class BillboardOutputPass
         while (dest.Count < source.Count)
             dest.Add(null);
 
-        for (int i = 0; i < source.Count; i++)
+        for (var i = 0; i < source.Count; i++)
             CopyBillboard(source[i], ref dest, i);
 
         if (dest.Count > source.Count)
@@ -320,11 +360,11 @@ internal static class BillboardOutputPass
 
     private static void CopyBillboard(MyBillboard source, ref List<MyBillboard> dest, int index)
     {
-        bool triangle = source is MyTriangleBillboard;
-        MyBillboard copy = dest[index];
+        var triangle = source is MyTriangleBillboard;
+        var copy = dest[index];
         if (copy == null || triangle != (copy is MyTriangleBillboard))
         {
-            copy = triangle ? (MyBillboard)new MyTriangleBillboard() : new MyBillboard();
+            copy = triangle ? new MyTriangleBillboard() : new MyBillboard();
             dest[index] = copy;
         }
 
@@ -346,9 +386,7 @@ internal static class BillboardOutputPass
         copy.AlphaCutout = source.AlphaCutout;
         copy.CustomViewProjection = source.CustomViewProjection;
 
-        var sourceTriangle = source as MyTriangleBillboard;
-        var copyTriangle = copy as MyTriangleBillboard;
-        if (sourceTriangle != null && copyTriangle != null)
+        if (source is MyTriangleBillboard sourceTriangle && copy is MyTriangleBillboard copyTriangle)
         {
             copyTriangle.UV0 = sourceTriangle.UV0;
             copyTriangle.UV1 = sourceTriangle.UV1;
@@ -363,11 +401,10 @@ internal static class BillboardOutputPass
         if (env == null)
             return;
 
-        MatrixD sourceInverse = MatrixD.Invert(sourceCameraWorld);
-        MatrixD sourceToRender = sourceInverse * env.InvViewD;
-        for (int i = 0; i < snapshot.Count; i++)
+        var sourceInverse = MatrixD.Invert(sourceCameraWorld);
+        var sourceToRender = sourceInverse * env.InvViewD;
+        foreach (var billboard in Snapshot)
         {
-            var billboard = snapshot[i];
             if (billboard.ParentID != uint.MaxValue ||
                 billboard.CustomViewProjection != -1 ||
                 billboard.LocalType != MyBillboard.LocalTypeEnum.Custom)
@@ -378,11 +415,10 @@ internal static class BillboardOutputPass
             billboard.Position2 = Vector3D.Transform(billboard.Position2, sourceToRender);
             billboard.Position3 = Vector3D.Transform(billboard.Position3, sourceToRender);
 
-            var triangle = billboard as MyTriangleBillboard;
-            if (triangle != null)
+            if (billboard is MyTriangleBillboard triangle)
             {
-                Vector3D normal = Vector3D.TransformNormal((Vector3D)triangle.Normal0, sourceToRender);
-                triangle.Normal0 = (Vector3)normal;
+                var normal = Vector3D.TransformNormal(triangle.Normal0, sourceToRender);
+                triangle.Normal0 = normal;
             }
         }
     }
@@ -391,14 +427,14 @@ internal static class BillboardOutputPass
     {
         var counts = MyBillboardRenderer.m_bucketCounts;
         MyBillboardRenderer.m_batches.Clear();
-        for (int i = 0; i < 6; i++)
+        for (var i = 0; i < 6; i++)
             counts[i] = 0;
 
-        for (int i = 0; i < snapshot.Count; i++)
-            CountBillboard(snapshot[i], counts);
+        foreach (var billboard in Snapshot)
+            CountBillboard(billboard, counts);
 
-        int total = 0;
-        for (int i = 0; i < 6; i++)
+        var total = 0;
+        for (var i = 0; i < 6; i++)
             total += counts[i];
         if (total == 0)
         {
@@ -406,40 +442,38 @@ internal static class BillboardOutputPass
             return 0;
         }
 
-        int safe = total > 32768 ? 32768 : total;
-        int tempSize = MyBillboardRenderer.m_tempBuffer.Length;
+        var safe = total > 32768 ? 32768 : total;
+        var tempSize = MyBillboardRenderer.m_tempBuffer.Length;
         while (total > tempSize)
             tempSize *= 2;
         Array.Resize(ref MyBillboardRenderer.m_tempBuffer, tempSize);
 
         var arrays = MyBillboardRenderer.m_arrayDataBillboards;
-        int dataSize = arrays.Length;
+        var dataSize = arrays.Length;
         while (safe > dataSize)
             dataSize *= 2;
         arrays.Resize(dataSize);
         MyBillboardRenderer.m_arrayDataBillboards = arrays;
 
-        for (int i = 0; i < 6; i++)
+        for (var i = 0; i < 6; i++)
             MyBillboardRenderer.m_bucketBatches[i] = default;
 
         MyBillboardRenderer.m_lastBatchOffset = 0;
         var indices = MyBillboardRenderer.m_bucketIndices;
         indices[0] = 0;
-        for (int i = 1; i < 6; i++)
+        for (var i = 1; i < 6; i++)
             indices[i] = indices[i - 1] + counts[i - 1];
 
-        for (int i = 0; i < snapshot.Count; i++)
-            PlaceBillboard(snapshot[i], indices);
+        foreach (var billboard in Snapshot)
+            PlaceBillboard(billboard, indices);
 
         indices[0] = 0;
-        for (int i = 1; i < 6; i++)
+        for (var i = 1; i < 6; i++)
             indices[i] = indices[i - 1] + counts[i - 1];
 
-        for (int i = 0; i < 6; i++)
-        {
+        for (var i = 0; i < 6; i++)
             if (i != 3 && i != 4 && counts[i] > 0)
                 Array.Sort(MyBillboardRenderer.m_tempBuffer, indices[i], counts[i]);
-        }
 
         MyBillboardRenderer.m_billboardCountSafe = safe;
         return safe;
@@ -449,7 +483,7 @@ internal static class BillboardOutputPass
     {
         if (billboard == null)
             return;
-        int bucket = MyBillboardRenderer.GetBillboardBucket(billboard);
+        var bucket = MyBillboardRenderer.GetBillboardBucket(billboard);
         if ((uint)bucket < 6)
             counts[bucket]++;
     }
@@ -458,36 +492,35 @@ internal static class BillboardOutputPass
     {
         if (billboard == null)
             return;
-        int bucket = MyBillboardRenderer.GetBillboardBucket(billboard);
+        var bucket = MyBillboardRenderer.GetBillboardBucket(billboard);
         if ((uint)bucket < 6)
             MyBillboardRenderer.m_tempBuffer[indices[bucket]++] = billboard;
     }
 
     private static void FillHistogram()
     {
-        for (int i = 0; i < blendHistogram.Length; i++)
-            blendHistogram[i] = 0;
-        for (int i = 0; i < snapshot.Count; i++)
+        Array.Clear(BlendHistogram, 0, BlendHistogram.Length);
+        foreach (var billboard in Snapshot)
         {
-            int blend = (int)snapshot[i].BlendType;
-            if ((uint)blend < (uint)blendHistogram.Length)
-                blendHistogram[blend]++;
+            var blend = (int)billboard.BlendType;
+            if ((uint)blend < (uint)BlendHistogram.Length)
+                BlendHistogram[blend]++;
         }
     }
 
     private static bool HasBucket(int bucket)
     {
-        return MyBillboardRenderer.m_bucketBatches != null &&
+        return MyBillboardRenderer.m_bucketBatches is { } batches &&
                bucket >= 0 &&
-               bucket < MyBillboardRenderer.m_bucketBatches.Length &&
-               MyBillboardRenderer.m_bucketBatches[bucket].Count > 0;
+               bucket < batches.Length &&
+               batches[bucket].Count > 0;
     }
 
     private static string DescribeSample()
     {
-        if (snapshot.Count == 0)
+        if (Snapshot.Count == 0)
             return "sample=none";
-        var billboard = snapshot[0];
+        var billboard = Snapshot[0];
         return "sample blend=" + billboard.BlendType +
                " mat=" + billboard.Material +
                " p0=" + billboard.Position0;
@@ -496,11 +529,11 @@ internal static class BillboardOutputPass
     private static string DescribeBuckets()
     {
         var batches = MyBillboardRenderer.m_bucketBatches;
-        string buckets = "null";
+        var buckets = "null";
         if (batches != null)
         {
             buckets = "";
-            for (int i = 0; i < batches.Length; i++)
+            for (var i = 0; i < batches.Length; i++)
             {
                 if (i > 0)
                     buckets += ",";
@@ -512,14 +545,14 @@ internal static class BillboardOutputPass
                " bucketBatches=" + buckets;
     }
 
-    private static string lastHudLog;
+    private static string _lastHudLog;
 
     public static void LogHudOnce(string message)
     {
         DebugLog.WriteFrame(message);
-        if (lastHudLog == message)
+        if (_lastHudLog == message)
             return;
-        lastHudLog = message;
+        _lastHudLog = message;
         MyLog.Default.WriteLine("DLSS HUD: " + message);
     }
 }
@@ -538,7 +571,7 @@ internal static class BillboardLdrPatch
 internal static class BillboardPostPpPatch
 {
     [HarmonyPrefix]
-    private static bool Prefix(MyRenderContext rc, ISrvBindable depthRead, IRtvBindable target)
+    private static bool Prefix(MyRenderContext rc, IRtvBindable target)
     {
         return !BillboardOutputPass.TryRenderPostPp(rc, target);
     }
@@ -567,7 +600,7 @@ internal static class BillboardAddRangePatch
 [HarmonyPatch(
     typeof(MyTransparentGeometry),
     nameof(MyTransparentGeometry.ApplyActionOnPersistentBillboards),
-    new[] { typeof(Action) })]
+    typeof(Action))]
 internal static class BillboardFrameCompletePatch
 {
     [HarmonyPostfix]

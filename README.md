@@ -20,7 +20,7 @@ Open the plugin config or **Options → Graphics → Anti-aliasing**:
 
 - **Anti-aliasing** — Off, FXAA, or DLSS (same control as the game's graphics options)
 - **Mode** — Quality, Balanced, Performance, Ultra Performance, or DLAA
-- **Model** — Latest Model (transformer K at every quality level), or transformer presets J / K / L / M (NVIDIA App cannot override this unofficial title)
+- **Model** — Latest Model (transformer K), transformer J / K / L / M, or CNN F (the older non-transformer model still in current SDK DLLs). NVIDIA App cannot override this unofficial title.
 - **Sharpness** — optional; transformer models may ignore it
 - **Show Status** — NGX state, GPU support, internal vs output resolution
 

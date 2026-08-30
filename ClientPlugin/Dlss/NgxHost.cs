@@ -10,15 +10,20 @@ public static class NgxHost
     public static bool IsLoaded { get; private set; }
     public static bool IsSupported { get; private set; }
     public static bool IsReady { get; private set; }
+    public static bool SupportKnown { get; private set; }
     public static string LastError { get; internal set; } = "not initialized";
+    public static int CurrentPresetHint =>
+        ToNgxPreset(Config.Current != null ? Config.Current.Model : DlssModel.LatestModel);
 
-    private static readonly List<string> SearchPaths = new List<string>();
-    private static readonly float[] mvMatrices = new float[48];
-    private static bool nativeLoaded;
-    private static uint lastOutW;
-    private static uint lastOutH;
-    private static int lastQuality = int.MinValue;
-    private static int lastPreset = int.MinValue;
+    private static readonly List<string> SearchPaths = [];
+    private static readonly float[] MvMatrices = new float[48];
+    private static bool _nativeLoaded;
+    private static bool _initBlocked;
+    private static bool _gpuRejected;
+    private static uint _lastOutW;
+    private static uint _lastOutH;
+    private static int _lastQuality = int.MinValue;
+    private static int _lastPreset = int.MinValue;
 
     public static void AddSearchPath(string path)
     {
@@ -29,6 +34,8 @@ public static class NgxHost
         {
             SearchPaths.Add(path);
             DebugLog.Write("search path " + path);
+            if (!IsLoaded && !_gpuRejected)
+                _initBlocked = false;
         }
     }
 
@@ -41,6 +48,8 @@ public static class NgxHost
     {
         if (IsLoaded)
             return IsSupported;
+        if (_initBlocked)
+            return false;
         if (device == IntPtr.Zero)
         {
             LastError = "D3D11 device is not ready";
@@ -48,25 +57,45 @@ public static class NgxHost
             return false;
         }
 
-        if (!nativeLoaded)
+        GpuSupport.TryProbe();
+        if (GpuSupport.Probed && !GpuSupport.IsNvidia)
         {
-            string loadError = "SeDlssNgx.dll was not found";
+            LastError = GpuSupport.UnsupportedReason;
+            SupportKnown = true;
+            _gpuRejected = true;
+            _initBlocked = true;
+            IsSupported = false;
+            DebugLog.Write("TryInit blocked: " + LastError);
+            return false;
+        }
+        if (!GpuSupport.CanAttemptDlss)
+        {
+            LastError = GpuSupport.UnsupportedReason;
+            return false;
+        }
+
+        if (!_nativeLoaded)
+        {
+            var loadError = "SeDlssNgx.dll was not found";
             foreach (var path in SearchPaths)
             {
                 DebugLog.Write("TryLoad " + path);
                 if (NgxNative.TryLoad(path, out loadError))
                 {
-                    nativeLoaded = true;
+                    _nativeLoaded = true;
                     DebugLog.Write("loaded SeDlssNgx.dll from " + path);
                     break;
                 }
                 DebugLog.Write("TryLoad failed: " + loadError);
             }
-            if (!nativeLoaded)
+            if (!_nativeLoaded)
             {
                 LastError = loadError;
                 MyLog.Default.Warning("DLSS: " + LastError);
                 DebugLog.Write("TryInit native load failed: " + LastError);
+                _initBlocked = true;
+                SupportKnown = true;
+                IsSupported = false;
                 return false;
             }
         }
@@ -79,23 +108,40 @@ public static class NgxHost
             LogPath = string.IsNullOrEmpty(logPath) ? searchPath : logPath,
             DebugLogPath = DebugLog.NativeFilePath
         };
-        DebugLog.Write("NGX Init dllSearch=" + searchPath + " log=" + args.LogPath + " debug=" + (args.DebugLogPath ?? "(none)"));
+        DebugLog.Write(
+            "NGX Init dllSearch=" + searchPath +
+            " log=" + args.LogPath +
+            " debug=" + (args.DebugLogPath ?? "(none)"));
         if (NgxNative.Init(ref args) == 0)
         {
             LastError = NgxNative.LastError();
             MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
             DebugLog.Write("NGX Init failed: " + LastError);
+            _initBlocked = true;
+            SupportKnown = true;
+            IsSupported = false;
             return false;
         }
 
         IsLoaded = true;
         IsSupported = NgxNative.IsSupported() != 0;
+        SupportKnown = true;
         LastError = NgxNative.LastError();
+        if (!IsSupported)
+        {
+            _initBlocked = true;
+            MyLog.Default.Warning("DLSS: " + LastError);
+        }
         DebugLog.Write("NGX Init ok supported=" + IsSupported + " " + LastError);
         return IsSupported;
     }
 
-    public static bool TrySetMode(DlssMode mode, uint outputWidth, uint outputHeight, out uint renderWidth, out uint renderHeight)
+    public static bool TrySetMode(
+        DlssMode mode,
+        uint outputWidth,
+        uint outputHeight,
+        out uint renderWidth,
+        out uint renderHeight)
     {
         renderWidth = outputWidth;
         renderHeight = outputHeight;
@@ -107,18 +153,24 @@ public static class NgxHost
 
         var quality = ToNgxQuality(mode);
         var preset = ToNgxPreset(Config.Current.Model);
-        if (IsReady && lastQuality == quality && lastPreset == preset &&
-            lastOutW == outputWidth && lastOutH == outputHeight)
+        if (IsReady && _lastQuality == quality && _lastPreset == preset &&
+            _lastOutW == outputWidth && _lastOutH == outputHeight)
         {
             renderWidth = (uint)DlssRuntime.InternalWidth;
             renderHeight = (uint)DlssRuntime.InternalHeight;
             return true;
         }
 
-        float sharpness;
         DebugLog.Write("SetMode quality=" + quality + " preset=" + preset +
                        " out=" + outputWidth + "x" + outputHeight);
-        if (NgxNative.SetMode(quality, outputWidth, outputHeight, out renderWidth, out renderHeight, out sharpness, preset) == 0)
+        if (NgxNative.SetMode(
+                quality,
+                outputWidth,
+                outputHeight,
+                out renderWidth,
+                out renderHeight,
+                out var sharpness,
+                preset) == 0)
         {
             IsReady = false;
             LastError = NgxNative.LastError();
@@ -126,20 +178,22 @@ public static class NgxHost
             return false;
         }
 
-        lastQuality = quality;
-        lastPreset = preset;
-        lastOutW = outputWidth;
-        lastOutH = outputHeight;
+        _lastQuality = quality;
+        _lastPreset = preset;
+        _lastOutW = outputWidth;
+        _lastOutH = outputHeight;
         IsReady = true;
         LastError = NgxNative.LastError();
-        DebugLog.Write("SetMode ok render=" + renderWidth + "x" + renderHeight + " sharpness=" + sharpness + " " + LastError);
+        DebugLog.Write(
+            "SetMode ok render=" + renderWidth + "x" + renderHeight +
+            " sharpness=" + sharpness + " " + LastError);
         return true;
     }
 
     public static bool Evaluate(IntPtr context, IntPtr color, IntPtr depth, IntPtr motionVectors, IntPtr output,
         IntPtr exposure, float jitterX, float jitterY, int reset, float sharpness, uint renderWidth, uint renderHeight)
     {
-        if (!IsReady)
+        if (!IsReady || _gpuRejected)
             return false;
         var args = new NgxNative.EvalArgs
         {
@@ -172,14 +226,19 @@ public static class NgxHost
         return true;
     }
 
-    public static IntPtr GenerateCameraMotionVectors(IntPtr device, IntPtr context, IntPtr depth, uint width, uint height,
+    public static IntPtr GenerateCameraMotionVectors(
+        IntPtr device,
+        IntPtr context,
+        IntPtr depth,
+        uint width,
+        uint height,
         float[] invViewProj, float[] unjitteredViewProj, float[] prevViewProj)
     {
-        if (!nativeLoaded || NgxNative.GenerateCameraMotionVectors == null)
+        if (_gpuRejected || !_nativeLoaded || NgxNative.GenerateCameraMotionVectors == null)
             return IntPtr.Zero;
-        Array.Copy(invViewProj, 0, mvMatrices, 0, 16);
-        Array.Copy(unjitteredViewProj, 0, mvMatrices, 16, 16);
-        Array.Copy(prevViewProj, 0, mvMatrices, 32, 16);
+        Array.Copy(invViewProj, 0, MvMatrices, 0, 16);
+        Array.Copy(unjitteredViewProj, 0, MvMatrices, 16, 16);
+        Array.Copy(prevViewProj, 0, MvMatrices, 32, 16);
         var args = new NgxNative.MvArgs
         {
             Device = device,
@@ -187,17 +246,19 @@ public static class NgxHost
             Depth = depth,
             Width = width,
             Height = height,
-            Matrices = mvMatrices
+            Matrices = MvMatrices
         };
         var mv = NgxNative.GenerateCameraMotionVectors(ref args);
         if (mv == IntPtr.Zero)
-            DebugLog.Write("GenerateCameraMotionVectors failed " + width + "x" + height + " " + (NgxNative.LastError() ?? LastError));
+            DebugLog.Write(
+                "GenerateCameraMotionVectors failed " + width + "x" + height +
+                " " + (NgxNative.LastError() ?? LastError));
         return mv;
     }
 
     public static bool TryUpsampleDepth(IntPtr device, IntPtr context, IntPtr srcDepth, IntPtr destDepth)
     {
-        if (!nativeLoaded || NgxNative.UpsampleDepth == null)
+        if (_gpuRejected || !_nativeLoaded || NgxNative.UpsampleDepth == null)
             return false;
         if (device == IntPtr.Zero || context == IntPtr.Zero || srcDepth == IntPtr.Zero || destDepth == IntPtr.Zero)
             return false;
@@ -209,16 +270,45 @@ public static class NgxHost
         return true;
     }
 
+    public static void AllowRetry()
+    {
+        if (_gpuRejected)
+            return;
+        _initBlocked = false;
+        SupportKnown = IsLoaded;
+    }
+
     public static void Shutdown()
     {
         DebugLog.Write("NgxHost.Shutdown loaded=" + IsLoaded + " ready=" + IsReady);
-        if (nativeLoaded && NgxNative.Shutdown != null)
-            NgxNative.Shutdown();
+        try
+        {
+            if (_nativeLoaded && NgxNative.Shutdown != null)
+                NgxNative.Shutdown();
+        }
+        catch (Exception e)
+        {
+            MyLog.Default.Error("DLSS native shutdown failed: " + e);
+        }
+        finally
+        {
+            if (_nativeLoaded)
+            {
+                NgxNative.Unload();
+                _nativeLoaded = false;
+            }
+        }
+
         IsLoaded = false;
         IsSupported = false;
         IsReady = false;
-        lastQuality = int.MinValue;
-        lastPreset = int.MinValue;
+        SupportKnown = false;
+        _initBlocked = false;
+        _gpuRejected = false;
+        _lastOutW = 0;
+        _lastOutH = 0;
+        _lastQuality = int.MinValue;
+        _lastPreset = int.MinValue;
         LastError = "shutdown";
     }
 
@@ -256,6 +346,7 @@ public static class NgxHost
             case DlssModel.TransformerK: return 11;
             case DlssModel.TransformerL: return 12;
             case DlssModel.TransformerM: return 13;
+            case DlssModel.CnnF: return 6;
             default: return 11;
         }
     }
@@ -263,10 +354,8 @@ public static class NgxHost
     private static string FindDlssDllDirectory()
     {
         foreach (var path in SearchPaths)
-        {
             if (File.Exists(Path.Combine(path, "nvngx_dlss.dll")))
                 return path;
-        }
         return SearchPaths.Count > 0 ? SearchPaths[0] : Environment.CurrentDirectory;
     }
 }

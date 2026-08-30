@@ -1,0 +1,77 @@
+root = true
+
+[{Plugin.cs,Config.cs,Dlss/*.cs,Patches/*.cs,Settings/ConfigStorage.cs,Settings/Elements/Dropdown.cs}]
+indent_style = space
+indent_size = 4
+tab_width = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 120
+
+# Namespace and using directives
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_using_directive_placement = outside_namespace:suggestion
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# Layout
+csharp_new_line_before_open_brace = all
+csharp_preserve_single_line_blocks = true
+csharp_preserve_single_line_statements = true
+csharp_prefer_braces = false:suggestion
+
+# Language usage
+dotnet_style_qualification_for_field = false:suggestion
+dotnet_style_qualification_for_property = false:suggestion
+dotnet_style_qualification_for_method = false:suggestion
+dotnet_style_qualification_for_event = false:suggestion
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:suggestion
+dotnet_style_readonly_field = true:suggestion
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+
+# ReSharper correctness inspections
+resharper_possible_null_reference_exception_highlighting = warning
+
+# Naming: ABI fields and Harmony/Pulsar entry points are intentionally excluded.
+dotnet_naming_rule.interfaces_use_i_prefix.symbols = interfaces
+dotnet_naming_rule.interfaces_use_i_prefix.style = interface_style
+dotnet_naming_rule.interfaces_use_i_prefix.severity = warning
+
+dotnet_naming_rule.types_use_pascal_case.symbols = types
+dotnet_naming_rule.types_use_pascal_case.style = pascal_case
+dotnet_naming_rule.types_use_pascal_case.severity = warning
+
+dotnet_naming_rule.non_field_members_use_pascal_case.symbols = non_field_members
+dotnet_naming_rule.non_field_members_use_pascal_case.style = pascal_case
+dotnet_naming_rule.non_field_members_use_pascal_case.severity = suggestion
+
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+
+dotnet_naming_symbols.types.applicable_kinds = class, struct, enum, delegate
+
+dotnet_naming_symbols.non_field_members.applicable_kinds = property, event, method
+
+dotnet_naming_style.interface_style.required_prefix = I
+dotnet_naming_style.interface_style.capitalization = pascal_case
+
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+[Plugin.cs]
+# The sealed host entry has no finalizer.
+dotnet_diagnostic.CA1816.severity = none
+
+[Patches/*.cs]
+# Harmony discovers patch types, methods, and double-underscore parameters by reflection.
+resharper_unused_type_global_highlighting = none
+resharper_unused_member_local_highlighting = none
+resharper_inconsistent_naming_highlighting = none
+
+[Patches/GetScreenDeviceResolutionPatch.cs]
+# Harmony supplies __result by reference before the prefix overwrites it.
+resharper_redundant_assignment_highlighting = none
+
+[Settings/Elements/Dropdown.cs]
+# GeneratedRegex is unavailable to the net48 target.
+dotnet_diagnostic.SYSLIB1045.severity = none

@@ -10,6 +10,12 @@ cbuffer Constants : register(b0)
 Texture2D DepthTex : register(t0);
 SamplerState PointSamp : register(s0);
 
+static const float2 kClosestOff[8] =
+{
+    float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
+    float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)
+};
+
 float2 CameraVelocity(float2 uv, float depth)
 {
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -27,6 +33,18 @@ float2 CameraVelocity(float2 uv, float depth)
 
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
-    float depth = DepthTex.SampleLevel(PointSamp, uv, 0).r;
-    return float4(CameraVelocity(uv, depth), 0, 1);
+    float closest = DepthTex.SampleLevel(PointSamp, uv, 0).r;
+    float2 bestUv = uv;
+    [unroll]
+    for (int i = 0; i < 8; i++)
+    {
+        float2 nuv = uv + kClosestOff[i] * InvRenderSize;
+        float nd = DepthTex.SampleLevel(PointSamp, nuv, 0).r;
+        if (nd > closest)
+        {
+            closest = nd;
+            bestUv = nuv;
+        }
+    }
+    return float4(CameraVelocity(bestUv, closest), 0, 1);
 }

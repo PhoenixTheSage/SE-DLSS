@@ -18,8 +18,7 @@ internal static class ApplySettingsPatch
         if (!DlssRuntime.SwapchainMatchesOutput())
             return true;
 
-        // Backbuffer.Size aliases m_resolution (internal after SetDRS). Keen would
-        // recreate the DXGI swapchain at the GUI size every apply/alt-tab.
+        // Backbuffer.Size follows internal ResolutionI; the swapchain is already output-sized.
         DebugLog.WriteFrame("ApplySettings skip swapchain resize; buffers already " +
                             settings.BackBufferWidth + "x" + settings.BackBufferHeight);
         if (MyRender11.m_settings.UseStereoRendering)

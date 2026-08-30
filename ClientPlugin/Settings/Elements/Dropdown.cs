@@ -1,15 +1,20 @@
-﻿using Sandbox.Graphics.GUI;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using ClientPlugin.Dlss;
+using Sandbox.Graphics.GUI;
 
 namespace ClientPlugin.Settings.Elements;
 
-internal class DropdownAttribute : Attribute, IElement
+[AttributeUsage(AttributeTargets.Property)]
+internal class DropdownAttribute(
+    int visibleRows = 20,
+    string label = null,
+    string description = null) : Attribute, IElement
 {
-    public readonly int VisibleRows;
-    public readonly string Label;
-    public readonly string Description;
+    public readonly int VisibleRows = visibleRows;
+    public readonly string Label = label;
+    public readonly string Description = description;
 
     private static string UnCamelCase(string str)
     {
@@ -24,37 +29,32 @@ internal class DropdownAttribute : Attribute, IElement
         );
     }
 
-    public DropdownAttribute(int visibleRows = 20, string label = null, string description = null)
-    {
-        VisibleRows = visibleRows;
-        Label = label;
-        Description = description;
-    }
-
     public List<Control> GetControls(string name, Func<object> propertyGetter, Action<object> propertySetter)
     {
-        object selectedEnum = propertyGetter();
-        Type choiceEnum = selectedEnum.GetType();
+        var selectedEnum = propertyGetter();
+        var choiceEnum = selectedEnum.GetType();
 
-        var dropdown = new MyGuiControlCombobox(toolTip: Description);
-        string[] elements = Enum.GetNames(choiceEnum);
+        var dropdown = new MyGuiControlCombobox(openAreaItemsCount: VisibleRows, toolTip: Description);
+        var elements = Enum.GetNames(choiceEnum);
 
-        for (int i = 0; i < elements.Length; i++)
+        for (var i = 0; i < elements.Length; i++)
         {
+            if (choiceEnum == typeof(AntiAliasingChoice) &&
+                (AntiAliasingChoice)i == AntiAliasingChoice.DLSS &&
+                !GpuSupport.CanOfferDlss)
+                continue;
             dropdown.AddItem(i, UnCamelCase(elements[i]));
         }
 
-        if (choiceEnum == typeof(ClientPlugin.Dlss.AntiAliasingChoice))
-        {
-            ClientPlugin.Dlss.GameAntiAliasing.BindPluginCombo(dropdown);
-        }
+        if (choiceEnum == typeof(AntiAliasingChoice))
+            GameAntiAliasing.BindPluginCombo(dropdown);
         else
         {
             void OnItemSelect()
             {
-                long key = dropdown.GetSelectedKey();
-                string value = elements[key];
-                object enumValue = Enum.Parse(choiceEnum, value);
+                var key = dropdown.GetSelectedKey();
+                var value = elements[key];
+                var enumValue = Enum.Parse(choiceEnum, value);
                 propertySetter(enumValue);
             }
 
@@ -63,14 +63,15 @@ internal class DropdownAttribute : Attribute, IElement
         }
 
         var label = Tools.Tools.GetLabelOrDefault(name, Label);
-        return new List<Control>()
-        {
-            new Control(new MyGuiControlLabel(text: label), minWidth: Control.LabelMinWidth),
-            new Control(dropdown, fillFactor: 1f),
-        };
+        return
+        [
+            new(new MyGuiControlLabel(text: label), minWidth: Control.LabelMinWidth),
+            new(dropdown, fillFactor: 1f)
+        ];
     }
-    public List<Type> SupportedTypes { get; } = new List<Type>()
-    {
+
+    public List<Type> SupportedTypes { get; } =
+    [
         typeof(Enum)
-    };
+    ];
 }

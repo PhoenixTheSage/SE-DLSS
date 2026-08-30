@@ -10,12 +10,12 @@ namespace ClientPlugin.Patches;
 internal static class CopyToRtPatch
 {
     [ThreadStatic]
-    private static bool passthrough;
+    private static bool _passthrough;
 
     [HarmonyPrefix]
     private static bool Prefix(IRtvBindable destination, ISrvBindable source)
     {
-        if (passthrough)
+        if (_passthrough)
             return true;
         if (!DlssRuntime.IsLive || destination == null || source == null)
             return true;
@@ -27,16 +27,15 @@ internal static class CopyToRtPatch
             (DlssRuntime.EvaluatedThisFrame ? "CopyToRT blit after evaluate " : "CopyToRT blit ") +
             source.Size + " -> " + output);
 
-        // Never evaluate into the DXGI swapchain. It is RT+SRV only (NGX copyBack),
-        // and Backbuffer.Size aliases internal ResolutionI after SetDRS.
-        passthrough = true;
+        // The swapchain lacks a UAV, and its reported size follows internal ResolutionI.
+        _passthrough = true;
         try
         {
             MyCopyToRT.Run(destination, source, false, new MyViewport(output.X, output.Y), true);
         }
         finally
         {
-            passthrough = false;
+            _passthrough = false;
             DlssRuntime.RestoreViewportToOutput();
         }
         return false;
@@ -45,7 +44,7 @@ internal static class CopyToRtPatch
     [HarmonyPostfix]
     private static void Postfix(IRtvBindable destination)
     {
-        if (passthrough)
+        if (_passthrough)
             return;
         if (!DlssRuntime.IsLive || destination == null)
             return;

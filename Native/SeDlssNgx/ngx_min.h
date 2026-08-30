@@ -45,6 +45,12 @@ typedef enum NVSDK_NGX_DLSS_Feature_Flags
 typedef enum NVSDK_NGX_DLSS_Hint_Render_Preset
 {
     NVSDK_NGX_DLSS_Hint_Render_Preset_Default = 0,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_A = 1,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_B = 2,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_C = 3,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_D = 4,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_E = 5,
+    NVSDK_NGX_DLSS_Hint_Render_Preset_F = 6,
     NVSDK_NGX_DLSS_Hint_Render_Preset_J = 10,
     NVSDK_NGX_DLSS_Hint_Render_Preset_K = 11,
     NVSDK_NGX_DLSS_Hint_Render_Preset_L = 12,

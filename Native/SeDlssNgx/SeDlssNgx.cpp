@@ -3,10 +3,10 @@
 
 #include <windows.h>
 #include <d3d11.h>
+#include <dxgi.h>
 
 #include "Shaders/bytecode/FullscreenVs.h"
 #include "Shaders/bytecode/MvPs.h"
-#include "Shaders/bytecode/MvDilatePs.h"
 #include "Shaders/bytecode/DepthUpsamplePs.h"
 
 #include <cstdarg>
@@ -17,6 +17,7 @@
 #include <vector>
 
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace
 {
@@ -40,12 +41,8 @@ std::vector<const wchar_t*> g_ngxPathPtrs;
 ID3D11Texture2D* g_mvTex;
 ID3D11RenderTargetView* g_mvRtv;
 ID3D11ShaderResourceView* g_mvSrv;
-ID3D11Texture2D* g_mvRawTex;
-ID3D11RenderTargetView* g_mvRawRtv;
-ID3D11ShaderResourceView* g_mvRawSrv;
 ID3D11VertexShader* g_mvVs;
 ID3D11PixelShader* g_mvPs;
-ID3D11PixelShader* g_mvDilatePs;
 ID3D11Buffer* g_mvCb;
 ID3D11SamplerState* g_mvSampler;
 uint32_t g_mvW;
@@ -172,7 +169,6 @@ void ReleaseCachedViews()
 void ReleaseMvPipeline()
 {
     ReleaseMvRt(g_mvTex, g_mvRtv, g_mvSrv);
-    ReleaseMvRt(g_mvRawTex, g_mvRawRtv, g_mvRawSrv);
     g_mvW = g_mvH = 0;
 }
 
@@ -361,7 +357,6 @@ void ReleaseMvShaders()
 {
     if (g_mvVs) { g_mvVs->Release(); g_mvVs = nullptr; }
     if (g_mvPs) { g_mvPs->Release(); g_mvPs = nullptr; }
-    if (g_mvDilatePs) { g_mvDilatePs->Release(); g_mvDilatePs = nullptr; }
     if (g_mvCb) { g_mvCb->Release(); g_mvCb = nullptr; }
     if (g_mvSampler) { g_mvSampler->Release(); g_mvSampler = nullptr; }
 }
@@ -401,7 +396,7 @@ bool EnsureDepthSrv(ID3D11Device* device, ID3D11Resource* res, const D3D11_TEXTU
 
 bool EnsureMvShaders(ID3D11Device* device)
 {
-    if (g_mvVs && g_mvPs && g_mvDilatePs && g_mvCb && g_mvSampler)
+    if (g_mvVs && g_mvPs && g_mvCb && g_mvSampler)
         return true;
 
     HRESULT hr = device->CreateVertexShader(kFullscreenVsBytecode, sizeof(kFullscreenVsBytecode), nullptr, &g_mvVs);
@@ -414,12 +409,6 @@ bool EnsureMvShaders(ID3D11Device* device)
     if (FAILED(hr))
     {
         SetError("failed to create motion-vector PS");
-        return false;
-    }
-    hr = device->CreatePixelShader(kMvDilatePsBytecode, sizeof(kMvDilatePsBytecode), nullptr, &g_mvDilatePs);
-    if (FAILED(hr))
-    {
-        SetError("failed to create motion-vector dilate PS");
         return false;
     }
 
@@ -468,11 +457,10 @@ bool CreateMvRt(ID3D11Device* device, uint32_t width, uint32_t height,
 
 bool EnsureMvTarget(ID3D11Device* device, uint32_t width, uint32_t height)
 {
-    if (g_mvTex && g_mvRawTex && g_mvW == width && g_mvH == height)
+    if (g_mvTex && g_mvW == width && g_mvH == height)
         return true;
     ReleaseMvPipeline();
-    if (!CreateMvRt(device, width, height, &g_mvRawTex, &g_mvRawRtv, &g_mvRawSrv) ||
-        !CreateMvRt(device, width, height, &g_mvTex, &g_mvRtv, &g_mvSrv))
+    if (!CreateMvRt(device, width, height, &g_mvTex, &g_mvRtv, &g_mvSrv))
     {
         ReleaseMvPipeline();
         SetError("failed to create motion-vector targets");
@@ -662,14 +650,19 @@ void BuildFeatureSearchPaths(const wchar_t* pluginPath)
         g_ngxPathPtrs.push_back(path.c_str());
 }
 
+bool IsForcedRenderPreset(int preset)
+{
+    return (preset >= (int)NVSDK_NGX_DLSS_Hint_Render_Preset_A &&
+            preset <= (int)NVSDK_NGX_DLSS_Hint_Render_Preset_F) ||
+           (preset >= (int)NVSDK_NGX_DLSS_Hint_Render_Preset_J &&
+            preset <= (int)NVSDK_NGX_DLSS_Hint_Render_Preset_M);
+}
+
 void ApplyHintPresets(NVSDK_NGX_Parameter* params, int preset)
 {
     unsigned int k = (unsigned int)NVSDK_NGX_DLSS_Hint_Render_Preset_K;
     unsigned int dlaa = k, quality = k, balanced = k, perf = k, ultra = k, ultraQ = k;
-    if (preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_J ||
-        preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_K ||
-        preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_L ||
-        preset == (int)NVSDK_NGX_DLSS_Hint_Render_Preset_M)
+    if (IsForcedRenderPreset(preset))
     {
         unsigned int forced = (unsigned int)preset;
         dlaa = quality = balanced = perf = ultra = ultraQ = forced;
@@ -683,6 +676,48 @@ void ApplyHintPresets(NVSDK_NGX_Parameter* params, int preset)
 }
 }
 
+const unsigned kVendorNvidia = 0x10DE;
+
+const char* VendorName(unsigned vendorId)
+{
+    switch (vendorId)
+    {
+    case 0x10DE: return "NVIDIA";
+    case 0x1002: return "AMD";
+    case 0x8086: return "Intel";
+    case 0x1414: return "Microsoft";
+    default: return "unknown vendor";
+    }
+}
+
+bool TryReadAdapter(ID3D11Device* device, unsigned& vendorId, std::string& adapterName)
+{
+    vendorId = 0;
+    adapterName.clear();
+    if (!device)
+        return false;
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice))) || !dxgiDevice)
+        return false;
+
+    IDXGIAdapter* adapter = nullptr;
+    HRESULT hr = dxgiDevice->GetAdapter(&adapter);
+    dxgiDevice->Release();
+    if (FAILED(hr) || !adapter)
+        return false;
+
+    DXGI_ADAPTER_DESC desc{};
+    hr = adapter->GetDesc(&desc);
+    adapter->Release();
+    if (FAILED(hr))
+        return false;
+
+    vendorId = desc.VendorId;
+    adapterName = Narrow(std::wstring(desc.Description));
+    return true;
+}
+
 extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -694,6 +729,7 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
         return 0;
     }
 
+    auto* device = static_cast<ID3D11Device*>(args->Device);
     if (args->DllSearchPath && args->DllSearchPath[0])
         g_searchPath = args->DllSearchPath;
 
@@ -706,6 +742,25 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
     }
 #endif
     DebugLogLine("Init search=%s", Narrow(g_searchPath).c_str());
+
+    unsigned vendorId = 0;
+    std::string adapterName;
+    if (TryReadAdapter(device, vendorId, adapterName))
+    {
+        DebugLogLine("GPU %s (%s) vendor=0x%04X",
+            VendorName(vendorId),
+            adapterName.empty() ? "unknown adapter" : adapterName.c_str(),
+            vendorId);
+        if (vendorId != kVendorNvidia)
+        {
+            char buf[384];
+            sprintf_s(buf, "DLSS requires an NVIDIA GPU. Detected %s (%s)",
+                VendorName(vendorId), adapterName.empty() ? "unknown adapter" : adapterName.c_str());
+            SetError(buf);
+            DebugLogLine("%s", buf);
+            return 0;
+        }
+    }
 
     // Current NVIDIA drivers keep _nvngx.dll in the DriverStore, not System32.
     // Load it by absolute path so a process-wide SetDllDirectory cannot hide it.
@@ -759,7 +814,7 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
         info.PathListInfo.Length = (unsigned int)g_ngxPathPtrs.size();
     }
 
-    g_device = static_cast<ID3D11Device*>(args->Device);
+    g_device = device;
     const wchar_t* logPath = args->LogPath && args->LogPath[0] ? args->LogPath : L".";
     // Driver export uses (version, featureInfo). SDK wrapper uses (featureInfo, version).
     const char* projectId = "8e4c2a71-6b9d-4f13-9c1a-7f2e5b90d4c3";
@@ -1072,22 +1127,13 @@ extern "C" void* SeDlss_GenerateCameraMotionVectors(const SeDlssMvArgs* args)
     ctx->PSSetConstantBuffers(0, 1, &g_mvCb);
     ctx->PSSetSamplers(0, 1, &g_mvSampler);
 
-    ctx->OMSetRenderTargets(1, &g_mvRawRtv, nullptr);
+    ctx->OMSetRenderTargets(1, &g_mvRtv, nullptr);
     ctx->PSSetShader(g_mvPs, nullptr, 0);
     ctx->PSSetShaderResources(0, 1, &g_cachedDepthSrv);
     ctx->Draw(3, 0);
 
-    ID3D11ShaderResourceView* nullSrv[2] = {};
-    ctx->PSSetShaderResources(0, 2, nullSrv);
-    ctx->OMSetRenderTargets(1, nullRtvs, nullptr);
-
-    ID3D11ShaderResourceView* dilateSrvs[2] = { g_mvRawSrv, g_cachedDepthSrv };
-    ctx->OMSetRenderTargets(1, &g_mvRtv, nullptr);
-    ctx->PSSetShader(g_mvDilatePs, nullptr, 0);
-    ctx->PSSetShaderResources(0, 2, dilateSrvs);
-    ctx->Draw(3, 0);
-
-    ctx->PSSetShaderResources(0, 2, nullSrv);
+    ID3D11ShaderResourceView* nullSrv[1] = {};
+    ctx->PSSetShaderResources(0, 1, nullSrv);
     ctx->OMSetRenderTargets(0, nullptr, nullptr);
     return g_mvTex;
 }

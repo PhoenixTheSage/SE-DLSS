@@ -25,8 +25,6 @@ if not defined FXC (
 if errorlevel 1 exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E PSMain /Fh "%OUT%\MvPs.h" /Vn kMvPsBytecode Shaders\Mv.hlsl
 if errorlevel 1 exit /b 1
-"%FXC%" /nologo /T ps_5_0 /E PSMain /Fh "%OUT%\MvDilatePs.h" /Vn kMvDilatePsBytecode Shaders\MvDilate.hlsl
-if errorlevel 1 exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E PSMain /Fh "%OUT%\DepthUpsamplePs.h" /Vn kDepthUpsamplePsBytecode Shaders\DepthUpsample.hlsl
 if errorlevel 1 exit /b 1
 

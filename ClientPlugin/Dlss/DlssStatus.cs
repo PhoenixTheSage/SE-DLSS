@@ -11,14 +11,28 @@ public static class DlssStatus
             var sb = new StringBuilder();
             sb.AppendLine(NgxHost.LastError ?? "not initialized");
             sb.AppendLine();
-            sb.Append("Anti-aliasing: ").AppendLine(Config.Current.AntiAliasing.ToString());
+            sb.Append("GPU: ").AppendLine(GpuSupport.StatusLine);
+            sb.Append("DLSS eligible: ").AppendLine(GpuSupport.CanOfferDlss ? "yes" : "no");
+            sb.Append("Anti-aliasing: ").Append(Config.Current.AntiAliasing).AppendLine();
             sb.Append("NGX loaded: ").AppendLine(NgxHost.IsLoaded ? "yes" : "no");
             sb.Append("DLSS supported: ").AppendLine(NgxHost.IsSupported ? "yes" : "no");
             sb.Append("Feature ready: ").AppendLine(NgxHost.IsReady ? "yes" : "no");
-            sb.Append("Mode: ").AppendLine(Config.Current.Mode.ToString());
-            sb.Append("Model: ").AppendLine(Config.Current.Model.ToString());
-            sb.Append("Internal resolution: ").Append(DlssRuntime.InternalWidth).Append(" x ").AppendLine(DlssRuntime.InternalHeight.ToString());
-            sb.Append("Output resolution: ").Append(DlssRuntime.OutputWidth).Append(" x ").AppendLine(DlssRuntime.OutputHeight.ToString());
+            sb.Append("Mode: ").Append(Config.Current.Mode).AppendLine();
+            sb.Append("Model: ")
+                .Append(Config.Current.Model)
+                .Append(" (NGX preset ")
+                .Append(NgxHost.CurrentPresetHint)
+                .AppendLine(")");
+            sb.Append("Internal resolution: ")
+                .Append(DlssRuntime.InternalWidth)
+                .Append(" x ")
+                .Append(DlssRuntime.InternalHeight)
+                .AppendLine();
+            sb.Append("Output resolution: ")
+                .Append(DlssRuntime.OutputWidth)
+                .Append(" x ")
+                .Append(DlssRuntime.OutputHeight)
+                .AppendLine();
             sb.Append("LDR evaluate this frame: ").AppendLine(DlssRuntime.EvaluatedThisFrame ? "yes" : "no");
             sb.Append("Search paths: ").AppendLine(NgxHost.SearchPathSummary());
 #if DEBUG

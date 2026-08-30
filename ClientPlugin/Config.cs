@@ -1,12 +1,12 @@
-using ClientPlugin.Dlss;
-using ClientPlugin.Settings;
-using ClientPlugin.Settings.Elements;
-using Sandbox.Graphics.GUI;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Xml.Serialization;
+using ClientPlugin.Dlss;
+using ClientPlugin.Settings;
+using ClientPlugin.Settings.Elements;
+using Sandbox.Graphics.GUI;
 using VRageMath;
 
 namespace ClientPlugin;
@@ -30,11 +30,17 @@ public class Config : INotifyPropertyChanged
 
     [Separator("Anti-aliasing")]
 
-    [Dropdown(visibleRows: 10, label: "Anti-aliasing", description: "DLSS replaces FXAA. Pick Off or FXAA to use the game's anti-aliasing instead.")]
+    [Dropdown(visibleRows: 10, label: "Anti-aliasing",
+        description: "DLSS replaces FXAA; choose Off or FXAA to use the game's anti-aliasing.")]
     public AntiAliasingChoice AntiAliasing
     {
         get => antiAliasing;
-        set => SetField(ref antiAliasing, value);
+        set
+        {
+            if (value == AntiAliasingChoice.DLSS && GpuSupport.Probed && !GpuSupport.CanOfferDlss)
+                value = AntiAliasingChoice.Off;
+            SetField(ref antiAliasing, value);
+        }
     }
 
     [XmlIgnore]
@@ -57,21 +63,24 @@ public class Config : INotifyPropertyChanged
 
     [Separator("DLSS Super Resolution")]
 
-    [Dropdown(description: "Quality trades internal resolution against image quality. DLAA stays at native resolution.")]
+    [Dropdown(
+        description: "Quality trades internal resolution against image quality. DLAA stays at native resolution.")]
     public DlssMode Mode
     {
         get => mode;
         set => SetField(ref mode, value);
     }
 
-    [Dropdown(description: "Transformer model used for Super Resolution. NVIDIA App cannot override this unofficial title. Latest Model uses transformer K at every quality level.")]
+    [Dropdown(description: "DLSS model. Latest Model uses transformer K; CNN F is the legacy option. " +
+                           "NVIDIA App overrides do not apply to this unofficial title.")]
     public DlssModel Model
     {
         get => model;
         set => SetField(ref model, value);
     }
 
-    [Slider(0f, 1f, 0.05f, SliderAttribute.SliderType.Float, label: "Sharpness", description: "Optional sharpening. Transformer models may ignore this.")]
+    [Slider(0f, 1f, 0.05f, label: "Sharpness",
+        description: "Optional sharpening; transformer models may ignore it.")]
     public float Sharpness
     {
         get => sharpness;
@@ -80,9 +89,11 @@ public class Config : INotifyPropertyChanged
 
     [Separator("Status")]
 
-    [Button(label: "Show Status", description: "GPU, NGX, and current internal resolution")]
-    public void ShowStatus()
+    [Button(label: "Show Status", description: "GPU, NGX support, and current resolutions")]
+    // ReSharper disable once UnusedMember.Global
+    public static void ShowStatus()
     {
+        GpuSupport.TryProbe();
         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
             MyMessageBoxStyleEnum.Info,
             buttonType: MyMessageBoxButtonsType.OK,
@@ -96,7 +107,8 @@ public class Config : INotifyPropertyChanged
 
     #region Property change notification boilerplate
 
-    public static readonly Config Default = new Config();
+    // Property notifications can run while Current is still being initialized.
+    public static readonly Config Default = new();
     public static readonly Config Current = ConfigStorage.Load();
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -115,12 +127,13 @@ public class Config : INotifyPropertyChanged
             GameAntiAliasing.ApplyFromConfig();
     }
 
-    private bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+    private void SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
     {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return;
+
         field = value;
         OnPropertyChanged(propertyName);
-        return true;
     }
 
     #endregion

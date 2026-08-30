@@ -4,12 +4,13 @@ using VRageRender;
 
 namespace ClientPlugin.Patches;
 
-[HarmonyPatch(typeof(MyRender11), "Draw", new[] { typeof(bool) })]
+[HarmonyPatch(typeof(MyRender11), "Draw", typeof(bool))]
 internal static class DrawPatch
 {
     [HarmonyPrefix]
     private static void Prefix()
     {
+        GpuSupport.TryProbe();
         DlssRuntime.SnapshotOutputSize();
         DlssRuntime.BeginFrameResources();
         DlssRuntime.EvaluatedThisFrame = false;

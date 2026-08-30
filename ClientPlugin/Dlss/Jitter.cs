@@ -13,26 +13,33 @@ internal static class Jitter
     public static Matrix PreviousViewProjection { get; private set; }
     public static bool HasPrevious { get; private set; }
 
-    private static int frameIndex;
-    private static bool applied;
-    private static Vector3D previousCameraPos;
-    private static Vector3 previousForward;
-    private static float previousFovV;
-    private static bool hasCameraSample;
-    private static Matrix savedProjection;
-    private static Matrix savedProjectionForSkybox;
-    private static Matrix savedViewProjectionAt0;
-    private static Matrix savedInvViewProjectionAt0;
-    private static Matrix savedInvProjection;
-    private static MatrixD savedViewProjectionD;
-    private static MatrixD savedInvViewProjectionD;
+    private static int _frameIndex;
+    private static bool _applied;
+    private static Vector3D _previousCameraPos;
+    private static Vector3 _previousForward;
+    private static float _previousFovV;
+    private static bool _hasCameraSample;
+    private static Matrix _savedProjection;
+    private static Matrix _savedProjectionForSkybox;
+    private static Matrix _savedViewProjectionAt0;
+    private static Matrix _savedInvViewProjectionAt0;
+    private static Matrix _savedInvProjection;
+    private static MatrixD _savedViewProjectionD;
+    private static MatrixD _savedInvViewProjectionD;
 
     public static void Reset()
     {
-        frameIndex = 0;
+        if (_applied)
+        {
+            var env = MyRender11.Environment;
+            if (env != null)
+                Restore(env.Matrices);
+        }
+
+        _frameIndex = 0;
         HasPrevious = false;
-        applied = false;
-        hasCameraSample = false;
+        _applied = false;
+        _hasCameraSample = false;
         OffsetX = 0f;
         OffsetY = 0f;
         JitteredInvViewProjection = default(Matrix);
@@ -43,10 +50,10 @@ internal static class Jitter
     public static void BeginFrame()
     {
         PreviousViewProjection = UnjitteredViewProjection;
-        OffsetX = Halton(frameIndex, 2) - 0.5f;
-        OffsetY = Halton(frameIndex, 3) - 0.5f;
-        frameIndex++;
-        HasPrevious = frameIndex > 1;
+        OffsetX = Halton(_frameIndex, 2) - 0.5f;
+        OffsetY = Halton(_frameIndex, 3) - 0.5f;
+        _frameIndex++;
+        HasPrevious = _frameIndex > 1;
     }
 
     public static bool ConsumeCameraCut()
@@ -57,19 +64,19 @@ internal static class Jitter
         var pos = env.CameraPosition;
         var forward = env.ViewAt0.Forward;
         var fov = env.FovV;
-        bool cut = !HasPrevious || !hasCameraSample;
-        if (hasCameraSample)
+        var cut = !HasPrevious || !_hasCameraSample;
+        if (_hasCameraSample)
         {
-            double dist = Vector3D.Distance(pos, previousCameraPos);
-            float align = Vector3.Dot(forward, previousForward);
-            float fovDelta = Math.Abs(fov - previousFovV);
+            var dist = Vector3D.Distance(pos, _previousCameraPos);
+            var align = Vector3.Dot(forward, _previousForward);
+            var fovDelta = Math.Abs(fov - _previousFovV);
             if (dist > 40.0 || align < 0.82f || fovDelta > 0.04f)
                 cut = true;
         }
-        previousCameraPos = pos;
-        previousForward = forward;
-        previousFovV = fov;
-        hasCameraSample = true;
+        _previousCameraPos = pos;
+        _previousForward = forward;
+        _previousFovV = fov;
+        _hasCameraSample = true;
         return cut;
     }
 
@@ -87,25 +94,21 @@ internal static class Jitter
 
     public static void Apply(MyEnvironmentMatrices env)
     {
-        if (applied || env == null)
+        if (_applied || env == null)
             return;
-        int width;
-        int height;
-        if (!TryGetRenderSize(out width, out height))
+        if (!TryGetRenderSize(out _, out _))
             return;
 
-        savedProjection = env.Projection;
-        savedProjectionForSkybox = env.ProjectionForSkybox;
-        savedViewProjectionAt0 = env.ViewProjectionAt0;
-        savedInvViewProjectionAt0 = env.InvViewProjectionAt0;
-        savedInvProjection = env.InvProjection;
-        savedViewProjectionD = env.ViewProjectionD;
-        savedInvViewProjectionD = env.InvViewProjectionD;
+        _savedProjection = env.Projection;
+        _savedProjectionForSkybox = env.ProjectionForSkybox;
+        _savedViewProjectionAt0 = env.ViewProjectionAt0;
+        _savedInvViewProjectionAt0 = env.InvViewProjectionAt0;
+        _savedInvProjection = env.InvProjection;
+        _savedViewProjectionD = env.ViewProjectionD;
+        _savedInvViewProjectionD = env.InvViewProjectionD;
         UnjitteredViewProjection = env.ViewProjectionAt0;
 
-        float ndcX;
-        float ndcY;
-        GetProjectionNdc(out ndcX, out ndcY);
+        GetProjectionNdc(out var ndcX, out var ndcY);
         env.Projection.M31 += ndcX;
         env.Projection.M32 += ndcY;
         env.ProjectionForSkybox.M31 += ndcX;
@@ -116,33 +119,31 @@ internal static class Jitter
         env.ViewProjectionD = env.ViewD * (MatrixD)env.Projection;
         env.InvViewProjectionD = MatrixD.Invert(env.ViewProjectionD);
         JitteredInvViewProjection = env.InvViewProjectionAt0;
-        applied = true;
+        _applied = true;
     }
 
     public static void Restore(MyEnvironmentMatrices env)
     {
-        if (!applied || env == null)
+        if (!_applied || env == null)
             return;
-        env.Projection = savedProjection;
-        env.ProjectionForSkybox = savedProjectionForSkybox;
-        env.ViewProjectionAt0 = savedViewProjectionAt0;
-        env.InvViewProjectionAt0 = savedInvViewProjectionAt0;
-        env.InvProjection = savedInvProjection;
-        env.ViewProjectionD = savedViewProjectionD;
-        env.InvViewProjectionD = savedInvViewProjectionD;
-        applied = false;
+        env.Projection = _savedProjection;
+        env.ProjectionForSkybox = _savedProjectionForSkybox;
+        env.ViewProjectionAt0 = _savedViewProjectionAt0;
+        env.InvViewProjectionAt0 = _savedInvViewProjectionAt0;
+        env.InvProjection = _savedInvProjection;
+        env.ViewProjectionD = _savedViewProjectionD;
+        env.InvViewProjectionD = _savedInvViewProjectionD;
+        _applied = false;
     }
 
     public static void GetProjectionNdc(out float ndcX, out float ndcY)
     {
         ndcX = 0f;
         ndcY = 0f;
-        int width;
-        int height;
-        if (!TryGetRenderSize(out width, out height))
+        if (!TryGetRenderSize(out var width, out var height))
             return;
-        float jitterNdcX = OffsetX * 2f / width;
-        float jitterNdcY = OffsetY * 2f / height;
+        var jitterNdcX = OffsetX * 2f / width;
+        var jitterNdcY = OffsetY * 2f / height;
         ndcX = -jitterNdcX;
         ndcY = jitterNdcY;
     }
@@ -157,10 +158,10 @@ internal static class Jitter
 
     private static float Halton(int index, int baseValue)
     {
-        float result = 0f;
-        float inv = 1f / baseValue;
-        float f = inv;
-        int i = index + 1;
+        var result = 0f;
+        var inv = 1f / baseValue;
+        var f = inv;
+        var i = index + 1;
         while (i > 0)
         {
             result += (i % baseValue) * f;

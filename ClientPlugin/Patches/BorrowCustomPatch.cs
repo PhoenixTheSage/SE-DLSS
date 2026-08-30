@@ -1,12 +1,11 @@
 using ClientPlugin.Dlss;
 using HarmonyLib;
 using VRage.Render11.Resources;
-using VRageRender;
 
 namespace ClientPlugin.Patches;
 
 [HarmonyPatch(typeof(MyBorrowedRwTextureManager), nameof(MyBorrowedRwTextureManager.BorrowCustom),
-    new[] { typeof(string), typeof(int), typeof(int) })]
+    typeof(string), typeof(int), typeof(int))]
 internal static class BorrowCustomPatch
 {
     [HarmonyPrefix]
@@ -27,8 +26,7 @@ internal static class BorrowCustomPatch
         if (output.X <= 0 || output.Y <= 0)
             return true;
 
-        // Name-only BorrowCustom uses ResolutionI (internal after SetDRS) and
-        // would downsample the 1080 HDR result before CopyToRT.
+        // The name-only overload uses internal ResolutionI and would downsample the output-sized HDR result.
         DebugLog.WriteFrame("BorrowCustom " + debugName + " at output " + output);
         __result = __instance.BorrowCustom(debugName, output.X, output.Y, samplesCount, samplesQuality);
         return false;

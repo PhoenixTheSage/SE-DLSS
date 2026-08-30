@@ -28,7 +28,9 @@ internal static class GraphicsOptionsAaPatch
 
     [HarmonyPostfix]
     [HarmonyPatch("ReadSettingsFromControls")]
-    private static void ReadSettingsPostfix(MyGuiScreenOptionsGraphics __instance, ref MyGraphicsSettings graphicsSettings)
+    private static void ReadSettingsPostfix(
+        MyGuiScreenOptionsGraphics __instance,
+        ref MyGraphicsSettings graphicsSettings)
     {
         GameAntiAliasing.RemapDlssKey(Combo(__instance), ref graphicsSettings);
     }
@@ -41,7 +43,7 @@ internal static class GraphicsOptionsAaPatch
     }
 }
 
-[HarmonyPatch(typeof(MyGuiScreenBase), nameof(MyGuiScreenBase.CloseScreen), new[] { typeof(bool) })]
+[HarmonyPatch(typeof(MyGuiScreenBase), nameof(MyGuiScreenBase.CloseScreen), typeof(bool))]
 internal static class GraphicsOptionsClosePatch
 {
     [HarmonyPostfix]

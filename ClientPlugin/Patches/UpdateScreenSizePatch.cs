@@ -1,9 +1,9 @@
+using System;
 using System.Reflection;
 using ClientPlugin.Dlss;
 using HarmonyLib;
 using Sandbox;
 using VRage.Game.Utils;
-using VRage.ModAPI;
 using VRageMath;
 using VRageRender;
 
@@ -15,10 +15,12 @@ internal static class UpdateScreenSizePatch
     [HarmonyPrefix]
     private static void Prefix(ref int width, ref int height, ref MyViewport viewport)
     {
+        var originalWidth = width;
+        var originalHeight = height;
         if (!TryForceOutput(ref width, ref height, ref viewport))
             return;
-        DebugLog.Write("UpdateScreenSize remapped " + width + "x" + height + " -> " +
-                       DlssRuntime.OutputResolution());
+        DebugLog.Write("UpdateScreenSize remapped " + originalWidth + "x" + originalHeight + " -> " +
+                       width + "x" + height);
     }
 
     internal static bool TryForceOutput(ref int width, ref int height, ref MyViewport viewport)
@@ -41,17 +43,16 @@ internal static class UpdateScreenSizePatch
 internal static class CameraUpdateScreenSizePatch
 {
     [HarmonyPrefix]
-    private static bool Prefix(MyCamera __instance, ref MyViewport currentScreenViewport)
+    private static void Prefix(ref MyViewport currentScreenViewport)
     {
         if (!DlssRuntime.WantsDlss)
-            return true;
+            return;
+
         var output = DlssRuntime.OutputResolution();
         if (output.X <= 0 || output.Y <= 0)
-            return true;
+            return;
+
         currentScreenViewport = new MyViewport(output.X, output.Y);
-        if ((int)__instance.Viewport.Width == output.X && (int)__instance.Viewport.Height == output.Y)
-            return false;
-        return true;
     }
 }
 
@@ -82,11 +83,11 @@ internal static class CameraViewportSizePatch
 {
     private static MethodBase TargetMethod()
     {
-        foreach (var method in typeof(MyCamera).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-        {
-            if (method.ReturnType == typeof(Vector2) && method.Name.IndexOf("ViewportSize", System.StringComparison.Ordinal) >= 0)
+        foreach (var method in typeof(MyCamera).GetMethods(
+                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            if (method.ReturnType == typeof(Vector2) &&
+                method.Name.IndexOf("ViewportSize", StringComparison.Ordinal) >= 0)
                 return method;
-        }
         return AccessTools.DeclaredMethod(typeof(MyCamera), "VRage.ModAPI.IMyCamera.get_ViewportSize");
     }
 

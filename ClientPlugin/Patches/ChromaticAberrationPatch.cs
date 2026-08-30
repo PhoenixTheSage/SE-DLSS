@@ -1,6 +1,5 @@
 using ClientPlugin.Dlss;
 using HarmonyLib;
-using VRage.Render11.Common;
 using VRage.Render11.Resources;
 using VRageMath;
 using VRageRender;
@@ -28,7 +27,13 @@ internal static class ChromaticAberrationPatch
         data.Screen.Resolution = new Vector2(size.X, size.Y);
         MyCommon.FrameConstantsData = data;
         var mapping = MyMapping.MapDiscard(MyCommon.FrameConstants);
-        mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
-        mapping.Unmap();
+        try
+        {
+            mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
+        }
+        finally
+        {
+            mapping.Unmap();
+        }
     }
 }
