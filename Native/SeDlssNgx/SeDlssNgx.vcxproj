@@ -46,7 +46,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <LinkIncremental>false</LinkIncremental>
-      <AdditionalDependencies>d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -58,17 +58,31 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="SeDlssNgx.h" />
     <ClInclude Include="ngx_min.h" />
+    <ClInclude Include="Shaders\bytecode\FullscreenVs.h" />
+    <ClInclude Include="Shaders\bytecode\MvPs.h" />
+    <ClInclude Include="Shaders\bytecode\MvDilatePs.h" />
+    <ClInclude Include="Shaders\bytecode\DepthUpsamplePs.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SeDlssNgx.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Fullscreen.hlsl" />
+    <None Include="Shaders\Mv.hlsl" />
+    <None Include="Shaders\MvDilate.hlsl" />
+    <None Include="Shaders\DepthUpsample.hlsl" />
+    <None Include="compile_shaders.bat" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CompileShaders" BeforeTargets="ClCompile">
+    <Exec Command="call &quot;$(ProjectDir)compile_shaders.bat&quot;" />
+  </Target>
   <Target Name="CopyToAssets" AfterTargets="Build">
     <MakeDir Directories="$(ProjectDir)..\..\Assets" />
     <Copy SourceFiles="$(OutDir)SeDlssNgx.dll" DestinationFolder="$(ProjectDir)..\..\Assets" SkipUnchangedFiles="true" />

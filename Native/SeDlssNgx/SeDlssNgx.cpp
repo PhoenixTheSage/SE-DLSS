@@ -1,9 +1,13 @@
 #include "SeDlssNgx.h"
 #include "ngx_min.h"
 
-#include <d3d11.h>
-#include <d3dcompiler.h>
 #include <windows.h>
+#include <d3d11.h>
+
+#include "Shaders/bytecode/FullscreenVs.h"
+#include "Shaders/bytecode/MvPs.h"
+#include "Shaders/bytecode/MvDilatePs.h"
+#include "Shaders/bytecode/DepthUpsamplePs.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -13,7 +17,6 @@
 #include <vector>
 
 #pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "d3dcompiler.lib")
 
 namespace
 {
@@ -149,107 +152,6 @@ T LoadFn2(const char* primary, const char* secondary)
     return LoadFn<T>(secondary);
 }
 
-const char kMvShader[] = R"(
-#pragma pack_matrix(row_major)
-cbuffer Constants : register(b0)
-{
-    float4x4 InvViewProj;
-    float4x4 UnjitteredViewProj;
-    float4x4 PrevViewProj;
-    float2 RenderSize;
-    float2 InvRenderSize;
-};
-Texture2D DepthTex : register(t0);
-SamplerState PointSamp : register(s0);
-
-float2 CameraVelocity(float2 uv, float depth)
-{
-    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    float4 clip = float4(ndc, depth, 1.0);
-    float4 world = mul(clip, InvViewProj);
-    world /= max(world.w, 1e-6);
-    float4 currClip = mul(world, UnjitteredViewProj);
-    currClip /= max(currClip.w, 1e-6);
-    float4 prevClip = mul(world, PrevViewProj);
-    prevClip /= max(prevClip.w, 1e-6);
-    float2 currUv = float2(currClip.x * 0.5 + 0.5, 0.5 - currClip.y * 0.5);
-    float2 prevUv = float2(prevClip.x * 0.5 + 0.5, 0.5 - prevClip.y * 0.5);
-    return (currUv - prevUv) * RenderSize;
-}
-
-void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
-{
-    uv = float2((id << 1) & 2, id & 2);
-    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
-}
-
-float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    float depth = DepthTex.SampleLevel(PointSamp, uv, 0).r;
-    return float4(CameraVelocity(uv, depth), 0, 1);
-}
-)";
-
-const char kMvDilateShader[] = R"(
-cbuffer Constants : register(b0)
-{
-    float4x4 InvViewProj;
-    float4x4 UnjitteredViewProj;
-    float4x4 PrevViewProj;
-    float2 RenderSize;
-    float2 InvRenderSize;
-};
-Texture2D VelocityTex : register(t0);
-Texture2D DepthTex : register(t1);
-SamplerState PointSamp : register(s0);
-
-static const float2 kMvDilateOff[8] =
-{
-    float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
-    float2(1, 1), float2(-1, 1), float2(1, -1), float2(-1, -1)
-};
-
-void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
-{
-    uv = float2((id << 1) & 2, id & 2);
-    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
-}
-
-float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
-{
-    float closest = DepthTex.SampleLevel(PointSamp, uv, 0).r;
-    float2 bestUv = uv;
-    [unroll]
-    for (int i = 0; i < 8; i++)
-    {
-        float2 nuv = uv + kMvDilateOff[i] * InvRenderSize;
-        float nd = DepthTex.SampleLevel(PointSamp, nuv, 0).r;
-        if (nd > closest)
-        {
-            closest = nd;
-            bestUv = nuv;
-        }
-    }
-    return float4(VelocityTex.SampleLevel(PointSamp, bestUv, 0).xy, 0, 1);
-}
-)";
-
-const char kDepthUpsampleShader[] = R"(
-Texture2D DepthTex : register(t0);
-SamplerState PointSamp : register(s0);
-
-void VSMain(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD0)
-{
-    uv = float2((id << 1) & 2, id & 2);
-    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
-}
-
-float PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Depth
-{
-    return DepthTex.SampleLevel(PointSamp, uv, 0).r;
-}
-)";
-
 void ReleaseMvRt(ID3D11Texture2D*& tex, ID3D11RenderTargetView*& rtv, ID3D11ShaderResourceView*& srv)
 {
     if (rtv) { rtv->Release(); rtv = nullptr; }
@@ -338,39 +240,13 @@ bool EnsureDepthUpsample(ID3D11Device* device)
     if (g_depthVs && g_depthPs && g_depthSampler && g_depthWriteAlways)
         return true;
 
-    ID3DBlob* vsBlob = nullptr;
-    ID3DBlob* psBlob = nullptr;
-    ID3DBlob* err = nullptr;
-    HRESULT hr = D3DCompile(kDepthUpsampleShader, sizeof(kDepthUpsampleShader) - 1, "SeDlssDepth",
-        nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &err);
+    HRESULT hr = device->CreateVertexShader(kFullscreenVsBytecode, sizeof(kFullscreenVsBytecode), nullptr, &g_depthVs);
     if (FAILED(hr))
     {
-        SetError("failed to compile depth-upsample VS");
-        if (err) err->Release();
-        return false;
-    }
-    if (err) { err->Release(); err = nullptr; }
-    hr = D3DCompile(kDepthUpsampleShader, sizeof(kDepthUpsampleShader) - 1, "SeDlssDepth",
-        nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &err);
-    if (FAILED(hr))
-    {
-        SetError("failed to compile depth-upsample PS");
-        vsBlob->Release();
-        if (err) err->Release();
-        return false;
-    }
-    if (err) err->Release();
-
-    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_depthVs);
-    vsBlob->Release();
-    if (FAILED(hr))
-    {
-        psBlob->Release();
         SetError("failed to create depth-upsample VS");
         return false;
     }
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_depthPs);
-    psBlob->Release();
+    hr = device->CreatePixelShader(kDepthUpsamplePsBytecode, sizeof(kDepthUpsamplePsBytecode), nullptr, &g_depthPs);
     if (FAILED(hr))
     {
         SetError("failed to create depth-upsample PS");
@@ -490,22 +366,6 @@ void ReleaseMvShaders()
     if (g_mvSampler) { g_mvSampler->Release(); g_mvSampler = nullptr; }
 }
 
-bool CompileFullscreenPs(ID3D11Device* device, const char* src, size_t srcLen, const char* name, ID3D11PixelShader** outPs)
-{
-    ID3DBlob* psBlob = nullptr;
-    ID3DBlob* err = nullptr;
-    HRESULT hr = D3DCompile(src, srcLen, name, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &err);
-    if (FAILED(hr))
-    {
-        if (err) err->Release();
-        return false;
-    }
-    if (err) err->Release();
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, outPs);
-    psBlob->Release();
-    return SUCCEEDED(hr);
-}
-
 bool EnsureDepthSrv(ID3D11Device* device, ID3D11Resource* res, const D3D11_TEXTURE2D_DESC& desc,
     ID3D11Resource*& cachedRes, ID3D11ShaderResourceView*& cachedSrv)
 {
@@ -544,45 +404,22 @@ bool EnsureMvShaders(ID3D11Device* device)
     if (g_mvVs && g_mvPs && g_mvDilatePs && g_mvCb && g_mvSampler)
         return true;
 
-    ID3DBlob* vsBlob = nullptr;
-    ID3DBlob* psBlob = nullptr;
-    ID3DBlob* err = nullptr;
-    HRESULT hr = D3DCompile(kMvShader, sizeof(kMvShader) - 1, "SeDlssMv", nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &err);
+    HRESULT hr = device->CreateVertexShader(kFullscreenVsBytecode, sizeof(kFullscreenVsBytecode), nullptr, &g_mvVs);
     if (FAILED(hr))
     {
-        SetError("failed to compile motion-vector VS");
-        if (err) err->Release();
-        return false;
-    }
-    if (err) { err->Release(); err = nullptr; }
-    hr = D3DCompile(kMvShader, sizeof(kMvShader) - 1, "SeDlssMv", nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &err);
-    if (FAILED(hr))
-    {
-        SetError("failed to compile motion-vector PS");
-        vsBlob->Release();
-        if (err) err->Release();
-        return false;
-    }
-    if (err) err->Release();
-
-    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_mvVs);
-    vsBlob->Release();
-    if (FAILED(hr))
-    {
-        psBlob->Release();
         SetError("failed to create motion-vector VS");
         return false;
     }
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_mvPs);
-    psBlob->Release();
+    hr = device->CreatePixelShader(kMvPsBytecode, sizeof(kMvPsBytecode), nullptr, &g_mvPs);
     if (FAILED(hr))
     {
         SetError("failed to create motion-vector PS");
         return false;
     }
-    if (!CompileFullscreenPs(device, kMvDilateShader, sizeof(kMvDilateShader) - 1, "SeDlssMvDilate", &g_mvDilatePs))
+    hr = device->CreatePixelShader(kMvDilatePsBytecode, sizeof(kMvDilatePsBytecode), nullptr, &g_mvDilatePs);
+    if (FAILED(hr))
     {
-        SetError("failed to compile motion-vector dilate PS");
+        SetError("failed to create motion-vector dilate PS");
         return false;
     }
 
