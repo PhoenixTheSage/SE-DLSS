@@ -1,10 +1,7 @@
 using System;
 using ClientPlugin.Dlss;
 using HarmonyLib;
-using VRage.Render11.Common;
 using VRage.Render11.Resources;
-using VRage.Render11.Resources.Textures;
-using VRageMath;
 using VRageRender;
 
 namespace ClientPlugin.Patches;
@@ -12,99 +9,37 @@ namespace ClientPlugin.Patches;
 [HarmonyPatch(typeof(MyToneMapping), nameof(MyToneMapping.Run))]
 internal static class ToneMappingPatch
 {
-    [HarmonyPrefix]
-    private static bool Prefix(
-        ISrvBindable src,
-        ISrvBindable avgLum,
-        ISrvBindable bloom,
-        bool enableTonemapping,
-        string dirtTexture,
-        bool needsAlphaLuminance,
-        ref IBorrowedCustomTexture __result)
+    [HarmonyPostfix]
+    private static void Postfix(ref IBorrowedCustomTexture __result)
     {
-        if (!DlssRuntime.IsLive || src == null)
-            return true;
-        if (src.Size.X != DlssRuntime.InternalWidth || src.Size.Y != DlssRuntime.InternalHeight)
-            return true;
+        if (!DlssRuntime.IsLive || DlssRuntime.EvaluatedThisFrame || __result == null)
+            return;
+        if (__result.Size.X != DlssRuntime.InternalWidth || __result.Size.Y != DlssRuntime.InternalHeight)
+            return;
 
-        var output = DlssRuntime.OutputResolution();
-        if (output.X <= 0 || output.Y <= 0)
-            return true;
+        var dest = DlssRuntime.AcquireLdrOutput();
+        if (dest == null)
+            return;
 
-        IBorrowedUavTexture hdr = null;
         try
         {
-            // NGX EvaluateFeature requires D3D11_BIND_UNORDERED_ACCESS on the output.
-            // BorrowRtv is RT+SRV only and fails with 0x8A000009 (RWFlagMissing).
-            hdr = MyManagers.RwTexturesPool.BorrowUav(
-                "DLSS.HdrUpscale",
-                output.X,
-                output.Y,
-                MyGBuffer.LBufferFormat);
-            if (!DlssRuntime.TryEvaluate(hdr, src, avgLum))
+            if (!DlssRuntime.TryEvaluate(dest, __result, null))
             {
-                DebugLog.Write("ToneMapping evaluate failed src=" + src.Size + " out=" + output);
-                return true;
+                DebugLog.Write("ToneMapping LDR evaluate failed src=" + __result.Size +
+                               " dest=" + dest.Size);
+                return;
             }
 
-            __result = TonemapAtOutput(hdr, avgLum, bloom, enableTonemapping, dirtTexture, needsAlphaLuminance, output);
-            DlssRuntime.EvaluatedHdrThisFrame = __result != null;
-            DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + src.Size + " out=" + output +
-                                " tonemap=" + (__result != null));
-            return __result == null;
+            __result.Release();
+            __result = dest;
+            DlssRuntime.EvaluatedThisFrame = true;
+            DlssRuntime.ApplyOutputSpace();
+            DebugLog.WriteFrame("ToneMapping LDR evaluate src=" + DlssRuntime.InternalWidth + "x" +
+                                DlssRuntime.InternalHeight + " dest=" + dest.Size);
         }
         catch (Exception e)
         {
-            DebugLog.Write("ToneMapping threw " + e);
-            DlssRuntime.EvaluatedHdrThisFrame = false;
-            return true;
-        }
-        finally
-        {
-            hdr?.Release();
-        }
-    }
-
-    private static IBorrowedCustomTexture TonemapAtOutput(
-        ISrvBindable hdr,
-        ISrvBindable avgLum,
-        ISrvBindable bloom,
-        bool enableTonemapping,
-        string dirtTexture,
-        bool needsAlphaLuminance,
-        Vector2I output)
-    {
-        // (name, width, height) binds to (name, samplesCount, samplesQuality) and
-        // CreateTexture2D fails with E_INVALIDARG (1920 samples).
-        var dest = MyManagers.RwTexturesPool.BorrowCustom("DLSS.Tonemapped", output.X, output.Y, 1, 0);
-        try
-        {
-            DlssRuntime.ApplyOutputSpace();
-
-            var rc = MyImmediateRC.RC;
-            rc.ComputeShader.SetConstantBuffer(0, MyCommon.FrameConstants);
-            rc.ComputeShader.SetUav(0, dest);
-            ITexture tempTexture = MyManagers.Textures.GetTempTexture(dirtTexture, new MyTextureStreamingManager.QueryArgs
-            {
-                TextureType = MyFileTextureEnum.ALPHAMASK,
-                WaitUntilLoaded = true,
-                SkipQualityReduction = true
-            }, 100);
-            rc.ComputeShader.SetSrvs(0, hdr, avgLum, bloom, tempTexture);
-            rc.ComputeShader.SetSampler(0, MySamplerStateManager.Default);
-            rc.ComputeShader.SetSampler(1, MySamplerStateManager.Point);
-            rc.ComputeShader.SetSampler(2, MySamplerStateManager.Default);
-            rc.ComputeShader.SetSampler(3, MySamplerStateManager.Default);
-            rc.ComputeShader.Set((!enableTonemapping) ? MyToneMapping.m_csSkip : (needsAlphaLuminance ? MyToneMapping.m_csAlphaLuminance : MyToneMapping.m_cs));
-            rc.Dispatch((output.X + 8 - 1) / 8, (output.Y + 8 - 1) / 8, 1);
-            rc.ComputeShader.SetUav(0, null);
-            rc.ComputeShader.Set(null);
-            return dest;
-        }
-        catch
-        {
-            dest.Release();
-            return null;
+            DebugLog.Write("ToneMapping LDR threw " + e);
         }
     }
 }

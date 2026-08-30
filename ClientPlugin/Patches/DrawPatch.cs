@@ -12,7 +12,7 @@ internal static class DrawPatch
     {
         DlssRuntime.SnapshotOutputSize();
         DlssRuntime.BeginFrameResources();
-        DlssRuntime.EvaluatedHdrThisFrame = false;
+        DlssRuntime.EvaluatedThisFrame = false;
         if (DlssRuntime.WantsDlss)
         {
             DlssRuntime.TryPrepareFrame();

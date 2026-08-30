@@ -104,9 +104,11 @@ public class Config : INotifyPropertyChanged
     protected virtual void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) || propertyName == nameof(Sharpness))
+        if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) ||
+            propertyName == nameof(Sharpness))
         {
-            DebugLog.Write("config " + propertyName + " aa=" + antiAliasing + " mode=" + mode + " model=" + model + " sharpness=" + sharpness);
+            DebugLog.Write("config " + propertyName + " aa=" + antiAliasing + " mode=" + mode +
+                           " model=" + model + " sharpness=" + sharpness);
             DlssRuntime.NotifyConfigChanged();
         }
         if (propertyName == nameof(AntiAliasing) && !SuppressApply)

@@ -24,7 +24,7 @@ internal static class CopyToRtPatch
 
         var output = DlssRuntime.OutputResolution();
         DebugLog.WriteFrame(
-            (DlssRuntime.EvaluatedHdrThisFrame ? "CopyToRT blit after HDR " : "CopyToRT blit ") +
+            (DlssRuntime.EvaluatedThisFrame ? "CopyToRT blit after evaluate " : "CopyToRT blit ") +
             source.Size + " -> " + output);
 
         // Never evaluate into the DXGI swapchain. It is RT+SRV only (NGX copyBack),

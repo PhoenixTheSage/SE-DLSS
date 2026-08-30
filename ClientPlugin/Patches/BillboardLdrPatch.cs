@@ -465,7 +465,7 @@ internal static class BillboardOutputPass
                 buckets += batches[i].Count;
             }
         }
-        return "eval=" + DlssRuntime.EvaluatedHdrThisFrame +
+        return "eval=" + DlssRuntime.EvaluatedThisFrame +
                " live=" + DlssRuntime.IsLive +
                " bucketBatches=" + buckets;
     }

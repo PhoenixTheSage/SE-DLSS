@@ -1020,7 +1020,7 @@ extern "C" int SeDlss_SetMode(int quality, uint32_t outWidth, uint32_t outHeight
         return 0;
     }
 
-    int flags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    int flags = NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     if (g_dlss && g_quality == quality && g_preset == preset && g_outW == outWidth && g_outH == outHeight && g_createFlags == flags)
     {
         if (outRenderWidth) *outRenderWidth = renderW;

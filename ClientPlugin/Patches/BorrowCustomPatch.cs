@@ -17,7 +17,7 @@ internal static class BorrowCustomPatch
         int samplesQuality,
         ref IBorrowedCustomTexture __result)
     {
-        if (!DlssRuntime.IsLive || !DlssRuntime.EvaluatedHdrThisFrame)
+        if (!DlssRuntime.IsLive || !DlssRuntime.EvaluatedThisFrame)
             return true;
         if (debugName != "DrawGameScene.ChromaticAberration" &&
             debugName != "MyRender11.FXAA.Rgb8")

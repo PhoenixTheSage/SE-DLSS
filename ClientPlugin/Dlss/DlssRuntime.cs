@@ -15,9 +15,11 @@ public static class DlssRuntime
     public static int OutputWidth { get; private set; }
     public static int OutputHeight { get; private set; }
     public static bool LastEvaluateFailed { get; private set; }
-    public static bool EvaluatedHdrThisFrame { get; set; }
+    public static bool EvaluatedThisFrame { get; set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
     private static bool outputDepthReady;
+    private static ICustomTexture ldrTexture;
+    private static PersistentLdrTarget ldrOutput;
 
     private static bool configChanged = true;
     private static bool resetHistory = true;
@@ -60,6 +62,7 @@ public static class DlssRuntime
         NgxHost.Shutdown();
         Jitter.Reset();
         ReleaseOutputDepth();
+        ReleaseLdrOutput();
         InternalWidth = InternalHeight = OutputWidth = OutputHeight = 0;
         cachedOutput = default(Vector2I);
         LastEvaluateFailed = false;
@@ -187,6 +190,30 @@ public static class DlssRuntime
         OutputDepthThisFrame?.Release();
         OutputDepthThisFrame = null;
         outputDepthReady = false;
+    }
+
+    public static IBorrowedCustomTexture AcquireLdrOutput()
+    {
+        var output = OutputResolution();
+        if (output.X <= 0 || output.Y <= 0)
+            return null;
+        if (ldrOutput != null && ldrOutput.Size.X == output.X && ldrOutput.Size.Y == output.Y)
+            return ldrOutput;
+
+        ReleaseLdrOutput();
+        ldrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.LdrUpscale", output.X, output.Y, 1, 0);
+        if (ldrTexture == null)
+            return null;
+        ldrOutput = new PersistentLdrTarget(ldrTexture);
+        DebugLog.Write("LDR output " + output.X + "x" + output.Y);
+        return ldrOutput;
+    }
+
+    public static void ReleaseLdrOutput()
+    {
+        ldrOutput = null;
+        if (ldrTexture != null)
+            MyManagers.CustomTextures.DisposeTex(ref ldrTexture);
     }
 
     public static IBorrowedDepthStencilTexture TryAcquireOutputDepth(IDepthStencil source, Vector2I size)
@@ -379,7 +406,7 @@ public static class DlssRuntime
         return true;
     }
 
-    public static bool TryEvaluate(IRtvBindable destination, ISrvBindable source, ISrvBindable exposure)
+    public static bool TryEvaluate(IResource destination, ISrvBindable source, ISrvBindable exposure)
     {
         if (!IsLive || consecutiveEvaluateFails >= 3)
         {

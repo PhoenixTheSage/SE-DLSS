@@ -33,6 +33,8 @@ public static class ConfigStorage
         {
             var xml = File.ReadAllText(path);
             xml = xml.Replace("LatestRecommended", "LatestModel");
+            xml = xml.Replace("<Evaluate>Ldr</Evaluate>", "");
+            xml = xml.Replace("<Evaluate>Hdr</Evaluate>", "");
             using (var reader = new StringReader(xml))
                 return (Config)xmlSerializer.Deserialize(reader) ?? Config.Default;
         }

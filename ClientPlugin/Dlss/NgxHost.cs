@@ -107,7 +107,8 @@ public static class NgxHost
 
         var quality = ToNgxQuality(mode);
         var preset = ToNgxPreset(Config.Current.Model);
-        if (IsReady && lastQuality == quality && lastPreset == preset && lastOutW == outputWidth && lastOutH == outputHeight)
+        if (IsReady && lastQuality == quality && lastPreset == preset &&
+            lastOutW == outputWidth && lastOutH == outputHeight)
         {
             renderWidth = (uint)DlssRuntime.InternalWidth;
             renderHeight = (uint)DlssRuntime.InternalHeight;
@@ -115,7 +116,8 @@ public static class NgxHost
         }
 
         float sharpness;
-        DebugLog.Write("SetMode quality=" + quality + " preset=" + preset + " out=" + outputWidth + "x" + outputHeight);
+        DebugLog.Write("SetMode quality=" + quality + " preset=" + preset +
+                       " out=" + outputWidth + "x" + outputHeight);
         if (NgxNative.SetMode(quality, outputWidth, outputHeight, out renderWidth, out renderHeight, out sharpness, preset) == 0)
         {
             IsReady = false;

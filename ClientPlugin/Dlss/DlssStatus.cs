@@ -19,7 +19,7 @@ public static class DlssStatus
             sb.Append("Model: ").AppendLine(Config.Current.Model.ToString());
             sb.Append("Internal resolution: ").Append(DlssRuntime.InternalWidth).Append(" x ").AppendLine(DlssRuntime.InternalHeight.ToString());
             sb.Append("Output resolution: ").Append(DlssRuntime.OutputWidth).Append(" x ").AppendLine(DlssRuntime.OutputHeight.ToString());
-            sb.Append("HDR evaluate: ").AppendLine(DlssRuntime.EvaluatedHdrThisFrame ? "yes" : "no");
+            sb.Append("LDR evaluate this frame: ").AppendLine(DlssRuntime.EvaluatedThisFrame ? "yes" : "no");
             sb.Append("Search paths: ").AppendLine(NgxHost.SearchPathSummary());
 #if DEBUG
             if (!string.IsNullOrEmpty(DebugLog.FilePath))
