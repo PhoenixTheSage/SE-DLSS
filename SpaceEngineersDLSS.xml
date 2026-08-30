@@ -25,6 +25,6 @@ Adds NVIDIA DLSS & DLAA 4.5 to Space Engineers. Requires NVIDA DLSS-capable GPU.
 
     <Platforms>Windows</Platforms>
 
-    <Commit>TODO Git commit hash</Commit>
+    <Commit>78e9356bff672dda1db3708a45c16f2b6d82e0c8</Commit>
 
 </PluginData>
