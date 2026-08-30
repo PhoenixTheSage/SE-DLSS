@@ -134,27 +134,30 @@ internal static class BillboardOutputPass
         }
 
         FillHistogram();
+        Vector2I output = DlssRuntime.OutputPixelSize();
         LogHudOnce(reason + " captured=" + captured +
                    " indexed=" + snapshot.Count +
                    " postpp=" + blendHistogram[PostPpBucket] +
                    " dest=" + target.Size +
+                   " output=" + output +
                    " " + DescribeSample() +
                    " " + DescribeBuckets());
 
         if (!HasBucket(PostPpBucket))
             return true;
 
-        var dxgi = DlssRuntime.SwapchainBufferSize();
-        var output = DlssRuntime.OutputResolution();
-        int width = target.Size.X > 0 ? target.Size.X : (dxgi.X > 0 ? dxgi.X : output.X);
-        int height = target.Size.Y > 0 ? target.Size.Y : (dxgi.Y > 0 ? dxgi.Y : output.Y);
-        if (width <= 0 || height <= 0)
+        Vector2I viewport;
+        if (!DlssRuntime.TryGetHudTargetSize(target, out viewport))
+        {
+            LogHudOnce(reason + " skip internal dest=" + target.Size +
+                       " output=" + DlssRuntime.OutputPixelSize());
             return true;
+        }
 
         drawingPostPp = true;
         try
         {
-            rc.SetViewport(0f, 0f, width, height);
+            rc.SetViewport(0f, 0f, viewport.X, viewport.Y);
             rc.SetBlendState(MyBlendStateManager.BlendAlphaPremult);
             rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
             rc.SetRtv(target);

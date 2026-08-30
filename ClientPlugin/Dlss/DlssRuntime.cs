@@ -154,6 +154,26 @@ public static class DlssRuntime
         return output.X > 0 && dxgi.X == output.X && dxgi.Y == output.Y;
     }
 
+    public static Vector2I OutputPixelSize()
+    {
+        var dxgi = SwapchainBufferSize();
+        if (dxgi.X > 0 && dxgi.Y > 0)
+            return dxgi;
+        return OutputResolution();
+    }
+
+    // Backbuffer.Size aliases internal ResolutionI after SetDRS. HUD must use
+    // the DXGI size, and must not composite onto an internal scene RT.
+    public static bool TryGetHudTargetSize(IRtvBindable target, out Vector2I size)
+    {
+        size = OutputPixelSize();
+        if (target == null || size.X <= 0 || size.Y <= 0)
+            return false;
+        if (ReferenceEquals(target, MyRender11.Backbuffer))
+            return true;
+        return target.Size.X == size.X && target.Size.Y == size.Y;
+    }
+
     public static void BeginFrameResources()
     {
         outputDepthReady = false;
