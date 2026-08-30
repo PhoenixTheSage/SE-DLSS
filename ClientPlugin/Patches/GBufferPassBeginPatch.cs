@@ -4,13 +4,13 @@ using VRageRender;
 
 namespace ClientPlugin.Patches;
 
-[HarmonyPatch(typeof(MyRenderingPass), "Begin")]
+[HarmonyPatch(typeof(MyGBufferPass), "Begin")]
 internal static class GBufferPassBeginPatch
 {
     [HarmonyPrefix]
-    private static void Prefix(MyRenderingPass __instance)
+    private static void Prefix(MyGBufferPass __instance)
     {
-        if (!DlssRuntime.IsLive || !(__instance is MyGBufferPass))
+        if (!DlssRuntime.IsLive)
             return;
         var env = MyRender11.Environment;
         if (env == null)

@@ -49,8 +49,6 @@ internal static class ToneMappingPatch
 
             __result = TonemapAtOutput(hdr, avgLum, bloom, enableTonemapping, dirtTexture, needsAlphaLuminance, output);
             DlssRuntime.EvaluatedHdrThisFrame = __result != null;
-            if (__result != null)
-                DlssRuntime.ApplyOutputSpace();
             DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + src.Size + " out=" + output +
                                 " tonemap=" + (__result != null));
             return __result == null;
@@ -81,12 +79,7 @@ internal static class ToneMappingPatch
         var dest = MyManagers.RwTexturesPool.BorrowCustom("DLSS.Tonemapped", output.X, output.Y, 1, 0);
         try
         {
-            var data = MyCommon.FrameConstantsData;
-            data.Screen.Resolution = new Vector2(output.X, output.Y);
-            MyCommon.FrameConstantsData = data;
-            var mapping = MyMapping.MapDiscard(MyCommon.FrameConstants);
-            mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
-            mapping.Unmap();
+            DlssRuntime.ApplyOutputSpace();
 
             var rc = MyImmediateRC.RC;
             rc.ComputeShader.SetConstantBuffer(0, MyCommon.FrameConstants);

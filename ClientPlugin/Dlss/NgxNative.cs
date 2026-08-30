@@ -49,9 +49,7 @@ internal static class NgxNative
         public IntPtr Depth;
         public uint Width;
         public uint Height;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public float[] InvViewProj;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public float[] UnjitteredViewProj;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public float[] PrevViewProj;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 48)] public float[] Matrices;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

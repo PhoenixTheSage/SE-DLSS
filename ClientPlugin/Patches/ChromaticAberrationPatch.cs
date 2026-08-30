@@ -31,11 +31,4 @@ internal static class ChromaticAberrationPatch
         mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
         mapping.Unmap();
     }
-
-    [HarmonyPostfix]
-    private static void Postfix()
-    {
-        if (DlssRuntime.EvaluatedHdrThisFrame)
-            DlssRuntime.ApplyOutputSpace();
-    }
 }

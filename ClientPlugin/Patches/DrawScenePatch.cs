@@ -10,7 +10,6 @@ internal static class DrawScenePatch
     [HarmonyPrefix]
     private static void Prefix()
     {
-        DlssRuntime.DisableConsoleDrs();
         if (!DlssRuntime.WantsDlss || !DlssRuntime.TryPrepareFrame())
         {
             DlssRuntime.RestoreOutputResolution();

@@ -10,7 +10,7 @@ internal static class DrawPatch
     [HarmonyPrefix]
     private static void Prefix()
     {
-        DlssRuntime.DisableConsoleDrs();
+        DlssRuntime.SnapshotOutputSize();
         DlssRuntime.BeginFrameResources();
         DlssRuntime.EvaluatedHdrThisFrame = false;
         if (DlssRuntime.WantsDlss)

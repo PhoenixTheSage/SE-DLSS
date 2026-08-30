@@ -64,6 +64,9 @@ ID3D11Texture2D* g_evalOutTex;
 uint32_t g_evalOutW;
 uint32_t g_evalOutH;
 DXGI_FORMAT g_evalOutFmt = DXGI_FORMAT_UNKNOWN;
+ID3D11Resource* g_cachedEvalDest;
+D3D11_TEXTURE2D_DESC g_cachedEvalDestDesc{};
+bool g_cachedEvalDestHasUav;
 FILE* g_debugLog;
 char g_lastEvalLog[256];
 
@@ -276,6 +279,8 @@ void ReleaseEvalOutput()
     if (g_evalOutTex) { g_evalOutTex->Release(); g_evalOutTex = nullptr; }
     g_evalOutW = g_evalOutH = 0;
     g_evalOutFmt = DXGI_FORMAT_UNKNOWN;
+    g_cachedEvalDest = nullptr;
+    g_cachedEvalDestHasUav = false;
 }
 
 DXGI_FORMAT DepthSrvFormat(DXGI_FORMAT resourceFormat)
@@ -404,6 +409,23 @@ bool QueryTexture2D(ID3D11Resource* res, D3D11_TEXTURE2D_DESC* desc)
         return false;
     tex->GetDesc(desc);
     tex->Release();
+    return true;
+}
+
+bool DescribeEvalDest(ID3D11Resource* output, D3D11_TEXTURE2D_DESC* desc, bool* hasUav)
+{
+    if (g_cachedEvalDest == output)
+    {
+        *desc = g_cachedEvalDestDesc;
+        *hasUav = g_cachedEvalDestHasUav;
+        return true;
+    }
+    if (!QueryTexture2D(output, desc))
+        return false;
+    g_cachedEvalDest = output;
+    g_cachedEvalDestDesc = *desc;
+    g_cachedEvalDestHasUav = (desc->BindFlags & D3D11_BIND_UNORDERED_ACCESS) != 0;
+    *hasUav = g_cachedEvalDestHasUav;
     return true;
 }
 
@@ -950,7 +972,6 @@ extern "C" int SeDlss_Init(const SeDlssInitArgs* args)
 
 extern "C" int SeDlss_IsSupported(void)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
     return g_supported ? 1 : 0;
 }
 
@@ -1052,7 +1073,6 @@ extern "C" int SeDlss_SetMode(int quality, uint32_t outWidth, uint32_t outHeight
 
 extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_initialized || !g_dlss || !args || !args->DeviceContext || !args->Color || !args->Output || !args->Depth)
     {
         SetError("Evaluate missing device, color, depth, or output");
@@ -1079,7 +1099,8 @@ extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
     }
 
     D3D11_TEXTURE2D_DESC destDesc{};
-    if (!QueryTexture2D(output, &destDesc))
+    bool hasUav = false;
+    if (!DescribeEvalDest(output, &destDesc, &hasUav))
     {
         SetError("output is not a 2D texture");
         return 0;
@@ -1088,7 +1109,7 @@ extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
     // DLSS writes the output as a UAV. Keen's backbuffer and BorrowRtv targets are RT+SRV only.
     ID3D11Resource* evalOutput = output;
     bool copyBack = false;
-    if ((destDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) == 0)
+    if (!hasUav)
     {
         if (!g_device || !EnsureEvalOutput(g_device, destDesc))
         {
@@ -1155,7 +1176,6 @@ extern "C" int SeDlss_Evaluate(const SeDlssEvalArgs* args)
 
 extern "C" void* SeDlss_GenerateCameraMotionVectors(const SeDlssMvArgs* args)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
     if (!args || !args->Device || !args->DeviceContext || !args->Depth || args->Width == 0 || args->Height == 0)
     {
         SetError("motion-vector args are incomplete");
@@ -1237,7 +1257,6 @@ extern "C" void* SeDlss_GenerateCameraMotionVectors(const SeDlssMvArgs* args)
 
 extern "C" int SeDlss_UpsampleDepth(void* devicePtr, void* contextPtr, void* srcDepth, void* destDepth)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
     if (!devicePtr || !contextPtr || !srcDepth || !destDepth)
     {
         SetError("depth upsample args are incomplete");

@@ -13,6 +13,7 @@ public static class NgxHost
     public static string LastError { get; internal set; } = "not initialized";
 
     private static readonly List<string> SearchPaths = new List<string>();
+    private static readonly float[] mvMatrices = new float[48];
     private static bool nativeLoaded;
     private static uint lastOutW;
     private static uint lastOutH;
@@ -174,6 +175,9 @@ public static class NgxHost
     {
         if (!nativeLoaded || NgxNative.GenerateCameraMotionVectors == null)
             return IntPtr.Zero;
+        Array.Copy(invViewProj, 0, mvMatrices, 0, 16);
+        Array.Copy(unjitteredViewProj, 0, mvMatrices, 16, 16);
+        Array.Copy(prevViewProj, 0, mvMatrices, 32, 16);
         var args = new NgxNative.MvArgs
         {
             Device = device,
@@ -181,9 +185,7 @@ public static class NgxHost
             Depth = depth,
             Width = width,
             Height = height,
-            InvViewProj = invViewProj,
-            UnjitteredViewProj = unjitteredViewProj,
-            PrevViewProj = prevViewProj
+            Matrices = mvMatrices
         };
         var mv = NgxNative.GenerateCameraMotionVectors(ref args);
         if (mv == IntPtr.Zero)

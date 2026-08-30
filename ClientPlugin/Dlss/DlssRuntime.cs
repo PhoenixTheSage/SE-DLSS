@@ -48,6 +48,7 @@ public static class DlssRuntime
         consecutiveEvaluateFails = 0;
         LastEvaluateFailed = false;
         Jitter.Reset();
+        DisableConsoleDrs();
         DebugLog.Write("NotifyConfigChanged aa=" + (Config.Current != null ? Config.Current.AntiAliasing.ToString() : "?") +
                        " mode=" + (Config.Current != null ? Config.Current.Mode.ToString() : "?") +
                        " model=" + (Config.Current != null ? Config.Current.Model.ToString() : "?"));
@@ -67,7 +68,6 @@ public static class DlssRuntime
 
     public static void ApplyInternalResolution()
     {
-        DisableConsoleDrs();
         var target = DesiredInternalResolution();
         if (target.X <= 0 || target.Y <= 0)
             return;
@@ -76,6 +76,7 @@ public static class DlssRuntime
 
         // SetDRS is Keen's GBuffer/HBAO resize (screenshots use it too). It is not the
         // console DRS feature: it does not touch DRScaling, Present, or PSNative.dll.
+        DisableConsoleDrs();
         DebugLog.Write("SetDRS internal " + MyRender11.ResolutionI + " -> " + target);
         MyRender11.SetDRS(target);
         PinViewportToInternal();
@@ -156,10 +157,12 @@ public static class DlssRuntime
 
     public static Vector2I OutputPixelSize()
     {
-        var dxgi = SwapchainBufferSize();
-        if (dxgi.X > 0 && dxgi.Y > 0)
-            return dxgi;
         return OutputResolution();
+    }
+
+    public static void SnapshotOutputSize()
+    {
+        RememberNativeOutput();
     }
 
     // Backbuffer.Size aliases internal ResolutionI after SetDRS. HUD must use
@@ -250,6 +253,7 @@ public static class DlssRuntime
                 NgxHost.LastError = "DLSS is not the selected anti-aliasing mode";
             return false;
         }
+        DisableConsoleDrs();
         if (MyRender11.MultisamplingEnabled)
         {
             NgxHost.LastError = "DLSS cannot run while MSAA is enabled. Set anti-aliasing to Off, FXAA, or DLSS.";
@@ -314,9 +318,9 @@ public static class DlssRuntime
     {
         // MyBackbuffer.Size aliases m_resolution (internal after SetDRS). The DXGI
         // texture and swapchain mode stay at the real output, including DLAA 1:1.
-        var dxgi = SwapchainBufferSize();
-        if (dxgi.X > 0 && dxgi.Y > 0)
-            return dxgi;
+        if (cachedOutput.X > 0 && cachedOutput.Y > 0)
+            return cachedOutput;
+        RememberNativeOutput();
         if (cachedOutput.X > 0 && cachedOutput.Y > 0)
             return cachedOutput;
         var swap = MyRender11.m_swapchain;
