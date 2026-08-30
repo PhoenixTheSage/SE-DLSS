@@ -32,6 +32,12 @@ internal static class BillboardOutputPass
     private static MatrixD publishedCameraWorld;
     private static bool hasPendingCamera;
     private static bool hasPublishedCamera;
+    private static int lastSubmitTick;
+
+    // Keep the last coherent HUD frame across early ApplyAction calls (empty
+    // pendingAdds). Expire it once Rich HUD actually stops submitting, or the
+    // last cursor/quad stays frozen on screen.
+    private const int StaleHudMs = 200;
 
     public static void BeginDraw()
     {
@@ -60,6 +66,7 @@ internal static class BillboardOutputPass
             publishedCameraWorld = pendingCameraWorld;
             hasPublishedCamera = hasPendingCamera;
             hasPendingCamera = false;
+            NoteHudSubmitLocked();
             count = published.Count;
         }
 
@@ -74,6 +81,7 @@ internal static class BillboardOutputPass
         {
             CapturePendingCameraIfNeeded();
             pendingAdds.Add(billboard);
+            NoteHudSubmitLocked();
         }
     }
 
@@ -83,13 +91,17 @@ internal static class BillboardOutputPass
             return;
         lock (snapshotLock)
         {
+            bool added = false;
             foreach (var billboard in billboards)
             {
                 if (!IsPostPp(billboard))
                     continue;
                 CapturePendingCameraIfNeeded();
                 pendingAdds.Add(billboard);
+                added = true;
             }
+            if (added)
+                NoteHudSubmitLocked();
         }
     }
 
@@ -225,6 +237,14 @@ internal static class BillboardOutputPass
         bool reanchor;
         lock (snapshotLock)
         {
+            if (HudSnapshotIsStaleLocked())
+            {
+                LogHudOnce("Expired stale PostPP snapshot count=" + published.Count);
+                ClearPublishedLocked();
+                snapshot.Clear();
+                return 0;
+            }
+
             FreezeInto(published, snapshot);
             sourceCamera = publishedCameraWorld;
             reanchor = hasPublishedCamera;
@@ -233,6 +253,28 @@ internal static class BillboardOutputPass
         if (reanchor)
             ReanchorToRenderCamera(sourceCamera);
         return snapshot.Count;
+    }
+
+    private static void NoteHudSubmitLocked()
+    {
+        lastSubmitTick = Environment.TickCount;
+    }
+
+    private static bool HudSnapshotIsStaleLocked()
+    {
+        if (published.Count == 0 || pendingAdds.Count > 0)
+            return false;
+        unchecked
+        {
+            return Environment.TickCount - lastSubmitTick > StaleHudMs;
+        }
+    }
+
+    private static void ClearPublishedLocked()
+    {
+        published.Clear();
+        hasPublishedCamera = false;
+        hasPendingCamera = false;
     }
 
     private static bool IsPostPp(MyBillboard billboard)
