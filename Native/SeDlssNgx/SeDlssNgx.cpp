@@ -1212,9 +1212,10 @@ extern "C" int SeDlss_UpsampleDepth(void* devicePtr, void* contextPtr, void* src
     return 1;
 }
 
-extern "C" void SeDlss_Shutdown(void)
+void ShutdownImpl()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
+    DebugLogLine("SeDlss_Shutdown");
     ReleaseDlss();
     ReleaseMvPipeline();
     ReleaseEvalOutput();
@@ -1227,11 +1228,21 @@ extern "C" void SeDlss_Shutdown(void)
         g_evalParams = nullptr;
     }
     g_capabilityParams = nullptr;
-    if (g_initialized && pShutdown1)
+    if (g_initialized && pShutdown1 && g_device)
         pShutdown1(g_device);
     g_initialized = false;
     g_supported = false;
     g_device = nullptr;
+    pShutdown1 = nullptr;
+    pReleaseFeature = nullptr;
+    pDestroyParams = nullptr;
+    pEvaluate = nullptr;
+    pCreateFeature = nullptr;
+    pGetCaps = nullptr;
+    pAllocParams = nullptr;
+    pInitProject = nullptr;
+    pInitProjectSdk = nullptr;
+    pInitApp = nullptr;
     if (g_ngx)
     {
         FreeLibrary(g_ngx);
@@ -1239,6 +1250,28 @@ extern "C" void SeDlss_Shutdown(void)
     }
     SetError("shutdown");
     CloseDebugLog();
+}
+
+extern "C" void SeDlss_Shutdown(void)
+{
+    // NGX/D3D teardown can AV if the device is already dying. Keep this wrapper
+    // free of C++ objects with destructors so SEH can swallow the fault.
+    __try
+    {
+        ShutdownImpl();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        g_initialized = false;
+        g_supported = false;
+        g_device = nullptr;
+        g_dlss = nullptr;
+        g_evalParams = nullptr;
+        g_capabilityParams = nullptr;
+        pShutdown1 = nullptr;
+        SetError("shutdown failed");
+        CloseDebugLog();
+    }
 }
 
 extern "C" const char* SeDlss_LastError(void)

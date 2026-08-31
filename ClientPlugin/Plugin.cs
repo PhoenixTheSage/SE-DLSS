@@ -25,6 +25,7 @@ public sealed class Plugin : IPlugin
 
     private SettingsGenerator settingsGenerator;
     private Harmony harmony;
+    private Harmony deviceHarmony;
     private bool disposed;
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -39,6 +40,8 @@ public sealed class Plugin : IPlugin
 
         harmony = new Harmony(Name);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
+        deviceHarmony = new Harmony(DeviceDisposePatch.HarmonyId);
+        DeviceDisposePatch.Apply(deviceHarmony);
         GpuSupport.TryProbe();
         MyLog.Default.WriteLine("DLSS plugin initialized. GPU: " + GpuSupport.StatusLine);
         DebugLog.Write("Harmony patched, plugin initialized GPU=" + GpuSupport.StatusLine);
@@ -62,6 +65,8 @@ public sealed class Plugin : IPlugin
             MyLog.Default.Error("DLSS failed to remove Harmony patches: " + e);
         }
         harmony = null;
+        // Leave deviceHarmony applied so NGX can shut down when the D3D device
+        // is disposed after this plugin. Process exit reclaims the patch.
         DlssRuntime.Shutdown();
         GpuSupport.Reset();
         settingsGenerator = null;

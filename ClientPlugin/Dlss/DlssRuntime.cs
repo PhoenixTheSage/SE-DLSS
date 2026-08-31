@@ -70,8 +70,22 @@ public static class DlssRuntime
         DebugLog.Write("DlssRuntime.Shutdown");
         NgxHost.Shutdown();
         Jitter.Reset();
-        ReleaseOutputDepth();
-        ReleaseLdrOutput();
+        try
+        {
+            ReleaseOutputDepth();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ReleaseOutputDepth during shutdown: " + e);
+        }
+        try
+        {
+            ReleaseLdrOutput();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ReleaseLdrOutput during shutdown: " + e);
+        }
         InternalWidth = InternalHeight = OutputWidth = OutputHeight = 0;
         _cachedOutput = default(Vector2I);
         _configChanged = true;

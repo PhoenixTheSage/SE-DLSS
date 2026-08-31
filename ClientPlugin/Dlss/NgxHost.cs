@@ -18,6 +18,8 @@ public static class NgxHost
     private static readonly List<string> SearchPaths = [];
     private static readonly float[] MvMatrices = new float[48];
     private static bool _nativeLoaded;
+    private static bool _ngxTornDown;
+    private static IntPtr _device;
     private static bool _initBlocked;
     private static bool _gpuRejected;
     private static uint _lastOutW;
@@ -124,6 +126,8 @@ public static class NgxHost
         }
 
         IsLoaded = true;
+        _device = device;
+        _ngxTornDown = false;
         IsSupported = NgxNative.IsSupported() != 0;
         SupportKnown = true;
         LastError = NgxNative.LastError();
@@ -278,27 +282,46 @@ public static class NgxHost
         SupportKnown = IsLoaded;
     }
 
+    /// <summary>
+    /// NGX D3D11 shutdown must run before the device is released, on the thread
+    /// that owns it. Plugin.Dispose is neither: it runs on the game thread after
+    /// (or while) Keen tears D3D down, and NVSDK_NGX_D3D11_Shutdown1 then AVs.
+    /// Native teardown happens in <see cref="OnDeviceDisposing"/>.
+    /// </summary>
     public static void Shutdown()
     {
-        DebugLog.Write("NgxHost.Shutdown loaded=" + IsLoaded + " ready=" + IsReady);
+        DebugLog.Write(
+            "NgxHost.Shutdown loaded=" + IsLoaded + " ready=" + IsReady +
+            " ngxTornDown=" + _ngxTornDown);
+        ResetSessionFlags();
+    }
+
+    public static void OnDeviceDisposing(IntPtr device)
+    {
+        if (!_nativeLoaded || _ngxTornDown || NgxNative.Shutdown == null)
+            return;
+        if (device == IntPtr.Zero)
+            return;
+        if (_device != IntPtr.Zero && device != _device)
+            return;
+
+        DebugLog.Write("NgxHost.OnDeviceDisposing");
         try
         {
-            if (_nativeLoaded && NgxNative.Shutdown != null)
-                NgxNative.Shutdown();
+            NgxNative.Shutdown();
         }
         catch (Exception e)
         {
             MyLog.Default.Error("DLSS native shutdown failed: " + e);
         }
-        finally
-        {
-            if (_nativeLoaded)
-            {
-                NgxNative.Unload();
-                _nativeLoaded = false;
-            }
-        }
 
+        _ngxTornDown = true;
+        _device = IntPtr.Zero;
+        ResetSessionFlags();
+    }
+
+    private static void ResetSessionFlags()
+    {
         IsLoaded = false;
         IsSupported = false;
         IsReady = false;
