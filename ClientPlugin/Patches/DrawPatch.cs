@@ -1,3 +1,4 @@
+using System;
 using ClientPlugin.Dlss;
 using HarmonyLib;
 using VRageRender;
@@ -10,19 +11,26 @@ internal static class DrawPatch
     [HarmonyPrefix]
     private static void Prefix()
     {
-        GpuSupport.TryProbe();
-        DlssRuntime.SnapshotOutputSize();
-        DlssRuntime.BeginFrameResources();
-        DlssRuntime.EvaluatedThisFrame = false;
-        if (DlssRuntime.WantsDlss)
+        try
         {
-            DlssRuntime.TryPrepareFrame();
-            if (DlssRuntime.IsLive)
+            GpuSupport.TryProbe();
+            DlssRuntime.SnapshotOutputSize();
+            DlssRuntime.BeginFrameResources();
+            DlssRuntime.EvaluatedThisFrame = false;
+            if (DlssRuntime.WantsDlss)
             {
-                Jitter.BeginFrame();
-                // Sprites record before DrawScene and must see the swapchain size.
-                DlssRuntime.RestoreViewportToOutput();
+                DlssRuntime.TryPrepareFrame();
+                if (DlssRuntime.IsLive)
+                {
+                    Jitter.BeginFrame();
+                    // Sprites record before DrawScene and must see the swapchain size.
+                    DlssRuntime.RestoreViewportToOutput();
+                }
             }
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("Draw prefix: " + e.GetType().Name + ": " + e.Message);
         }
     }
 }

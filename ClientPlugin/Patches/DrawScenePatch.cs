@@ -1,3 +1,4 @@
+using System;
 using ClientPlugin.Dlss;
 using HarmonyLib;
 using VRageRender;
@@ -10,16 +11,24 @@ internal static class DrawScenePatch
     [HarmonyPrefix]
     private static void Prefix()
     {
-        if (!DlssRuntime.WantsDlss || !DlssRuntime.TryPrepareFrame())
+        try
         {
-            DlssRuntime.RestoreOutputResolution();
-            return;
-        }
+            if (!DlssRuntime.WantsDlss || !DlssRuntime.TryPrepareFrame())
+            {
+                DlssRuntime.RestoreOutputResolution();
+                return;
+            }
 
-        BillboardOutputPass.BeginDraw();
-        DebugLog.WriteFrame("DrawScene internal " + DlssRuntime.InternalWidth + "x" + DlssRuntime.InternalHeight);
-        DlssRuntime.ApplyInternalResolution();
-        DlssRuntime.PinViewportToInternal();
+            BillboardOutputPass.BeginDraw();
+            DebugLog.WriteFrame("DrawScene internal " + DlssRuntime.InternalWidth + "x" + DlssRuntime.InternalHeight);
+            DlssRuntime.ApplyInternalResolution();
+            DlssRuntime.PinViewportToInternal();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("DrawScene prefix: " + e.GetType().Name + ": " + e.Message);
+            DlssRuntime.RestoreOutputResolution();
+        }
     }
 
     [HarmonyPostfix]

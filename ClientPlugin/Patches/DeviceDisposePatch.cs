@@ -59,6 +59,6 @@ internal static class DeviceDisposePatch
     {
         if (__instance is not Device device || device.IsDisposed)
             return;
-        NgxHost.OnDeviceDisposing(device.NativePointer);
+        NgxHost.OnDeviceDisposing(device);
     }
 }

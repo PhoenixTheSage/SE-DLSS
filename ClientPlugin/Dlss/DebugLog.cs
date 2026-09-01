@@ -16,10 +16,8 @@ namespace ClientPlugin.Dlss;
 public static class DebugLog
 {
     public const string FileName = "SpaceEngineersDLSS.debug.log";
-    public const string NativeFileName = "SeDlssNgx.debug.log";
 
     public static string FilePath { get; private set; }
-    public static string NativeFilePath { get; private set; }
 
     private static readonly object Gate = new();
     private static readonly Dictionary<string, string> LastFrameByCaller = new();
@@ -38,7 +36,6 @@ public static class DebugLog
             {
                 Directory.CreateDirectory(dir);
                 FilePath = Path.Combine(dir, FileName);
-                NativeFilePath = Path.Combine(dir, NativeFileName);
                 _writer = new StreamWriter(FilePath, false, new UTF8Encoding(false))
                 {
                     AutoFlush = true
@@ -46,7 +43,6 @@ public static class DebugLog
                 _writer.WriteLine("Space Engineers DLSS debug log");
                 _writer.WriteLine("opened {0:o}", DateTime.Now);
                 _writer.WriteLine("folder {0}", dir);
-                _writer.WriteLine("native {0}", NativeFilePath);
                 _writer.WriteLine();
                 try
                 {
@@ -60,7 +56,6 @@ public static class DebugLog
             catch (Exception e)
             {
                 FilePath = null;
-                NativeFilePath = null;
                 _writer = null;
                 try
                 {

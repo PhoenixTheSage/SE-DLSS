@@ -368,5 +368,3 @@ MigrationBackup/
 *.il
 Assets/nvngx_dlssd.dll
 Assets/nvngx_dlssg.dll
-Native/SeDlssNgx/bin/
-Native/SeDlssNgx/obj/

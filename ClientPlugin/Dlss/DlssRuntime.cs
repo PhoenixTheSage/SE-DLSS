@@ -15,6 +15,7 @@ public static class DlssRuntime
     public static int OutputWidth { get; private set; }
     public static int OutputHeight { get; private set; }
     public static bool LastEvaluateFailed { get; private set; }
+    public static bool UsedExternalVelocity { get; private set; }
     public static bool EvaluatedThisFrame { get; set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
     private static bool _outputDepthReady;
@@ -23,6 +24,7 @@ public static class DlssRuntime
 
     private static bool _configChanged = true;
     private static bool _resetHistory = true;
+    private static volatile bool _pluginsReady;
     private static int _consecutiveEvaluateFails;
     private static Vector2I _cachedOutput;
 #if DEBUG
@@ -49,6 +51,15 @@ public static class DlssRuntime
     }
 
     public static bool IsLive => WantsDlss && NgxHost.IsReady && !MyRender11.MultisamplingEnabled;
+
+    public static void NotifyPluginsReady()
+    {
+        if (_pluginsReady)
+            return;
+        _pluginsReady = true;
+        AnomalyVelocity.Probe();
+        DebugLog.Write("plugins ready; NGX init allowed");
+    }
 
     public static void NotifyConfigChanged()
     {
@@ -91,8 +102,11 @@ public static class DlssRuntime
         _configChanged = true;
         _resetHistory = true;
         LastEvaluateFailed = false;
+        UsedExternalVelocity = false;
         EvaluatedThisFrame = false;
         _consecutiveEvaluateFails = 0;
+        _pluginsReady = false;
+        AnomalyVelocity.Reset();
 #if DEBUG
         _lastPrepareLog = null;
 #endif
@@ -284,10 +298,10 @@ public static class DlssRuntime
         try
         {
             upsampled = NgxHost.TryUpsampleDepth(
-                device.NativePointer,
-                rc.DeviceContext.NativePointer,
-                source.Resource.NativePointer,
-                OutputDepthThisFrame.Resource.NativePointer);
+                device,
+                rc.DeviceContext,
+                source.Resource,
+                OutputDepthThisFrame.Resource);
         }
         finally
         {
@@ -315,6 +329,8 @@ public static class DlssRuntime
 
     public static bool TryPrepareFrame()
     {
+        if (!_pluginsReady)
+            return false;
         if (!WantsDlss)
         {
             if (Config.Current != null && Config.Current.AntiAliasing == AntiAliasingChoice.DLSS)
@@ -342,8 +358,18 @@ public static class DlssRuntime
             return false;
         }
 
-        if (!NgxHost.IsLoaded && !NgxHost.TryInit(device.NativePointer, MyFileLogPath()))
+        try
+        {
+            if (!NgxHost.IsLoaded && !NgxHost.TryInit(device, MyFileLogPath()))
+                return false;
+        }
+        catch (Exception e)
+        {
+            NgxHost.LastError = "NGX init threw: " + e.GetType().Name + ": " + e.Message;
+            MyLog.Default.Error("DLSS: " + NgxHost.LastError);
+            DebugLog.Write(NgxHost.LastError);
             return false;
+        }
         if (!NgxHost.IsSupported)
             return false;
 
@@ -478,37 +504,55 @@ public static class DlssRuntime
         try
         {
             var mvec = IntPtr.Zero;
-            if (Jitter.HasPrevious)
+            var allowAnomaly = Config.Current?.UseAnomalyMotionVectors ?? true;
+            var externalMv = IntPtr.Zero;
+            var externalHistory = false;
+            var usedExternal = allowAnomaly && AnomalyVelocity.TryGetLive(
+                InternalWidth, InternalHeight, out externalMv, out externalHistory);
+            var historyValid = Jitter.HasPrevious;
+            if (usedExternal)
             {
-                Jitter.CopyToArray(Jitter.JitteredInvViewProjection, InvViewProj);
-                Jitter.CopyToArray(Jitter.UnjitteredViewProjection, UnjitteredViewProj);
-                Jitter.CopyToArray(Jitter.PreviousViewProjection, PrevViewProj);
-                mvec = NgxHost.GenerateCameraMotionVectors(
-                    device.NativePointer,
-                    rc.DeviceContext.NativePointer,
-                    depth.NativePointer,
-                    (uint)InternalWidth,
-                    (uint)InternalHeight,
-                    InvViewProj,
-                    UnjitteredViewProj,
-                    PrevViewProj);
+                mvec = externalMv;
+                historyValid = externalHistory;
+            }
+            else
+            {
+                if (allowAnomaly)
+                    AnomalyVelocity.NoteCameraFallback();
+                if (Jitter.HasPrevious)
+                {
+                    Jitter.CopyToArray(Jitter.JitteredInvViewProjection, InvViewProj);
+                    Jitter.CopyToArray(Jitter.UnjitteredViewProjection, UnjitteredViewProj);
+                    Jitter.CopyToArray(Jitter.PreviousViewProjection, PrevViewProj);
+                    mvec = NgxHost.GenerateCameraMotionVectors(
+                        device,
+                        rc.DeviceContext,
+                        depth,
+                        (uint)InternalWidth,
+                        (uint)InternalHeight,
+                        InvViewProj,
+                        UnjitteredViewProj,
+                        PrevViewProj);
+                }
             }
 
-            var motionVectorsFailed = Jitter.HasPrevious && mvec == IntPtr.Zero;
-            var reset = _resetHistory || _configChanged || !Jitter.HasPrevious || motionVectorsFailed ||
-                        Jitter.ConsumeCameraCut()
+            var sourceChanged = usedExternal != UsedExternalVelocity;
+            UsedExternalVelocity = usedExternal;
+            var motionVectorsFailed = !usedExternal && Jitter.HasPrevious && mvec == IntPtr.Zero;
+            var reset = _resetHistory || _configChanged || !historyValid || motionVectorsFailed ||
+                        sourceChanged || Jitter.ConsumeCameraCut()
                 ? 1
                 : 0;
             _configChanged = false;
             _resetHistory = false;
 
             var ok = NgxHost.Evaluate(
-                rc.DeviceContext.NativePointer,
-                color.NativePointer,
-                depth.NativePointer,
+                device,
+                rc.DeviceContext,
+                color,
+                depth,
                 mvec,
-                output.NativePointer,
-                IntPtr.Zero,
+                output,
                 Jitter.OffsetX,
                 Jitter.OffsetY,
                 reset,
@@ -531,7 +575,8 @@ public static class DlssRuntime
                 _consecutiveEvaluateFails = 0;
                 DebugLog.WriteFrame("TryEvaluate ok dest=" + destination.Size.X + "x" + destination.Size.Y +
                                     " src=" + source.Size.X + "x" + source.Size.Y +
-                                    " reset=" + reset + " mv=" + (mvec != IntPtr.Zero));
+                                    " reset=" + reset +
+                                    " mv=" + (usedExternal ? "anomaly" : mvec != IntPtr.Zero ? "camera" : "none"));
             }
 
             return ok;

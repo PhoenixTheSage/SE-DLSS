@@ -34,11 +34,15 @@ public static class DlssStatus
                 .Append(DlssRuntime.OutputHeight)
                 .AppendLine();
             sb.Append("LDR evaluate this frame: ").AppendLine(DlssRuntime.EvaluatedThisFrame ? "yes" : "no");
+            AnomalyVelocity.AppendStatus(sb);
             sb.Append("Search paths: ").AppendLine(NgxHost.SearchPathSummary());
+            sb.AppendLine("NGX ABI: oleaut-6");
 #if DEBUG
             if (!string.IsNullOrEmpty(DebugLog.FilePath))
                 sb.Append("Debug log: ").AppendLine(DebugLog.FilePath);
 #endif
+            if (NgxLog.HasMessages)
+                sb.Append("NGX log: ").AppendLine(NgxLog.LastLine);
             if (DlssRuntime.LastEvaluateFailed)
                 sb.AppendLine("Last evaluate failed; falling back to a stretch blit.");
             return sb.ToString();

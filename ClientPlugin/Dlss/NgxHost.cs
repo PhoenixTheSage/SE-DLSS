@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using SharpDX.Direct3D11;
 using VRage.Utils;
+using Device = SharpDX.Direct3D11.Device;
+using Resource = SharpDX.Direct3D11.Resource;
 
 namespace ClientPlugin.Dlss;
 
@@ -16,10 +19,9 @@ public static class NgxHost
         ToNgxPreset(Config.Current != null ? Config.Current.Model : DlssModel.LatestModel);
 
     private static readonly List<string> SearchPaths = [];
-    private static readonly float[] MvMatrices = new float[48];
-    private static bool _nativeLoaded;
     private static bool _ngxTornDown;
     private static IntPtr _device;
+    private static Device _deviceOwner;
     private static bool _initBlocked;
     private static bool _gpuRejected;
     private static uint _lastOutW;
@@ -46,13 +48,13 @@ public static class NgxHost
         return SearchPaths.Count == 0 ? "(none)" : string.Join("; ", SearchPaths);
     }
 
-    public static bool TryInit(IntPtr device, string logPath)
+    public static bool TryInit(Device device, string logPath)
     {
         if (IsLoaded)
             return IsSupported;
         if (_initBlocked)
             return false;
-        if (device == IntPtr.Zero)
+        if (device == null || device.IsDisposed)
         {
             LastError = "D3D11 device is not ready";
             DebugLog.Write("TryInit: " + LastError);
@@ -70,55 +72,34 @@ public static class NgxHost
             DebugLog.Write("TryInit blocked: " + LastError);
             return false;
         }
+
         if (!GpuSupport.CanAttemptDlss)
         {
             LastError = GpuSupport.UnsupportedReason;
             return false;
         }
 
-        if (!_nativeLoaded)
+        var searchPath = FindDlssDllDirectory();
+        var log = string.IsNullOrEmpty(logPath) ? searchPath : logPath;
+        DebugLog.Write("NGX Init dllSearch=" + searchPath + " log=" + log);
+        try
         {
-            var loadError = "SeDlssNgx.dll was not found";
-            foreach (var path in SearchPaths)
+            if (!NgxApi.Init(device, searchPath, log))
             {
-                DebugLog.Write("TryLoad " + path);
-                if (NgxNative.TryLoad(path, out loadError))
-                {
-                    _nativeLoaded = true;
-                    DebugLog.Write("loaded SeDlssNgx.dll from " + path);
-                    break;
-                }
-                DebugLog.Write("TryLoad failed: " + loadError);
-            }
-            if (!_nativeLoaded)
-            {
-                LastError = loadError;
-                MyLog.Default.Warning("DLSS: " + LastError);
-                DebugLog.Write("TryInit native load failed: " + LastError);
+                LastError = NgxApi.LastError;
+                MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
+                DebugLog.Write("NGX Init failed: " + LastError);
                 _initBlocked = true;
                 SupportKnown = true;
                 IsSupported = false;
                 return false;
             }
         }
-
-        var searchPath = FindDlssDllDirectory();
-        var args = new NgxNative.InitArgs
+        catch (Exception e)
         {
-            Device = device,
-            DllSearchPath = searchPath,
-            LogPath = string.IsNullOrEmpty(logPath) ? searchPath : logPath,
-            DebugLogPath = DebugLog.NativeFilePath
-        };
-        DebugLog.Write(
-            "NGX Init dllSearch=" + searchPath +
-            " log=" + args.LogPath +
-            " debug=" + (args.DebugLogPath ?? "(none)"));
-        if (NgxNative.Init(ref args) == 0)
-        {
-            LastError = NgxNative.LastError();
-            MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
-            DebugLog.Write("NGX Init failed: " + LastError);
+            LastError = "NGX init threw: " + e.GetType().Name + ": " + e.Message;
+            MyLog.Default.Error("DLSS: " + LastError);
+            DebugLog.Write(LastError);
             _initBlocked = true;
             SupportKnown = true;
             IsSupported = false;
@@ -126,16 +107,18 @@ public static class NgxHost
         }
 
         IsLoaded = true;
-        _device = device;
+        _device = device.NativePointer;
+        _deviceOwner = device;
         _ngxTornDown = false;
-        IsSupported = NgxNative.IsSupported() != 0;
+        IsSupported = NgxApi.IsSupported;
         SupportKnown = true;
-        LastError = NgxNative.LastError();
+        LastError = NgxApi.LastError;
         if (!IsSupported)
         {
             _initBlocked = true;
             MyLog.Default.Warning("DLSS: " + LastError);
         }
+
         DebugLog.Write("NGX Init ok supported=" + IsSupported + " " + LastError);
         return IsSupported;
     }
@@ -167,17 +150,11 @@ public static class NgxHost
 
         DebugLog.Write("SetMode quality=" + quality + " preset=" + preset +
                        " out=" + outputWidth + "x" + outputHeight);
-        if (NgxNative.SetMode(
-                quality,
-                outputWidth,
-                outputHeight,
-                out renderWidth,
-                out renderHeight,
-                out var sharpness,
-                preset) == 0)
+        if (!NgxApi.SetMode(quality, outputWidth, outputHeight, preset,
+                out renderWidth, out renderHeight, out var sharpness))
         {
             IsReady = false;
-            LastError = NgxNative.LastError();
+            LastError = NgxApi.LastError;
             DebugLog.Write("SetMode failed: " + LastError);
             return false;
         }
@@ -187,90 +164,77 @@ public static class NgxHost
         _lastOutW = outputWidth;
         _lastOutH = outputHeight;
         IsReady = true;
-        LastError = NgxNative.LastError();
+        LastError = NgxApi.LastError;
         DebugLog.Write(
             "SetMode ok render=" + renderWidth + "x" + renderHeight +
             " sharpness=" + sharpness + " " + LastError);
         return true;
     }
 
-    public static bool Evaluate(IntPtr context, IntPtr color, IntPtr depth, IntPtr motionVectors, IntPtr output,
-        IntPtr exposure, float jitterX, float jitterY, int reset, float sharpness, uint renderWidth, uint renderHeight)
+    public static bool Evaluate(
+        Device device,
+        DeviceContext context,
+        Resource color,
+        Resource depth,
+        IntPtr motionVectors,
+        Resource output,
+        float jitterX,
+        float jitterY,
+        int reset,
+        float sharpness,
+        uint renderWidth,
+        uint renderHeight)
     {
         if (!IsReady || _gpuRejected)
             return false;
-        var args = new NgxNative.EvalArgs
+        if (!NgxApi.Evaluate(device, context, color, depth, motionVectors, output,
+                jitterX, jitterY, reset, sharpness, renderWidth, renderHeight))
         {
-            DeviceContext = context,
-            Color = color,
-            Depth = depth,
-            MotionVectors = motionVectors,
-            Output = output,
-            Exposure = exposure,
-            JitterX = jitterX,
-            JitterY = jitterY,
-            MvScaleX = 1f,
-            MvScaleY = 1f,
-            Reset = reset,
-            Sharpness = sharpness,
-            RenderWidth = renderWidth,
-            RenderHeight = renderHeight
-        };
-        if (NgxNative.Evaluate(ref args) == 0)
-        {
-            LastError = NgxNative.LastError();
+            LastError = NgxApi.LastError;
             DebugLog.Write("Evaluate failed reset=" + reset + " jitter=" + jitterX + "," + jitterY +
                            " render=" + renderWidth + "x" + renderHeight + " mv=" + (motionVectors != IntPtr.Zero) +
                            " " + LastError);
             return false;
         }
-        LastError = NgxNative.LastError();
+
+        LastError = NgxApi.LastError;
         DebugLog.WriteFrame("Evaluate ok reset=" + reset +
                             " render=" + renderWidth + "x" + renderHeight + " mv=" + (motionVectors != IntPtr.Zero));
         return true;
     }
 
     public static IntPtr GenerateCameraMotionVectors(
-        IntPtr device,
-        IntPtr context,
-        IntPtr depth,
+        Device device,
+        DeviceContext context,
+        Resource depth,
         uint width,
         uint height,
         float[] invViewProj, float[] unjitteredViewProj, float[] prevViewProj)
     {
-        if (_gpuRejected || !_nativeLoaded || NgxNative.GenerateCameraMotionVectors == null)
+        if (_gpuRejected || !NgxApi.IsInitialized)
             return IntPtr.Zero;
-        Array.Copy(invViewProj, 0, MvMatrices, 0, 16);
-        Array.Copy(unjitteredViewProj, 0, MvMatrices, 16, 16);
-        Array.Copy(prevViewProj, 0, MvMatrices, 32, 16);
-        var args = new NgxNative.MvArgs
-        {
-            Device = device,
-            DeviceContext = context,
-            Depth = depth,
-            Width = width,
-            Height = height,
-            Matrices = MvMatrices
-        };
-        var mv = NgxNative.GenerateCameraMotionVectors(ref args);
+        var mv = DlssD3d.GenerateCameraMotionVectors(
+            device, context, depth, width, height,
+            invViewProj, unjitteredViewProj, prevViewProj);
         if (mv == IntPtr.Zero)
             DebugLog.Write(
                 "GenerateCameraMotionVectors failed " + width + "x" + height +
-                " " + (NgxNative.LastError() ?? LastError));
+                " " + (NgxApi.LastError ?? LastError));
         return mv;
     }
 
-    public static bool TryUpsampleDepth(IntPtr device, IntPtr context, IntPtr srcDepth, IntPtr destDepth)
+    public static bool TryUpsampleDepth(Device device, DeviceContext context, Resource srcDepth, Resource destDepth)
     {
-        if (_gpuRejected || !_nativeLoaded || NgxNative.UpsampleDepth == null)
+        if (_gpuRejected || !NgxApi.IsInitialized)
             return false;
-        if (device == IntPtr.Zero || context == IntPtr.Zero || srcDepth == IntPtr.Zero || destDepth == IntPtr.Zero)
+        if (device == null || context == null || srcDepth == null || destDepth == null)
             return false;
-        if (NgxNative.UpsampleDepth(device, context, srcDepth, destDepth) == 0)
+        if (!DlssD3d.TryUpsampleDepth(device, context, srcDepth, destDepth))
         {
-            DebugLog.Write("UpsampleDepth failed " + (NgxNative.LastError() ?? LastError));
+            DebugLog.Write("UpsampleDepth failed " + (NgxApi.LastError ?? LastError));
             return false;
         }
+
         return true;
     }
 
@@ -286,7 +250,7 @@ public static class NgxHost
     /// NGX D3D11 shutdown must run before the device is released, on the thread
     /// that owns it. Plugin.Dispose is neither: it runs on the game thread after
     /// (or while) Keen tears D3D down, and NVSDK_NGX_D3D11_Shutdown1 then AVs.
-    /// Native teardown happens in <see cref="OnDeviceDisposing"/>.
+    /// Teardown happens in <see cref="OnDeviceDisposing"/>.
     /// </summary>
     public static void Shutdown()
     {
@@ -296,27 +260,33 @@ public static class NgxHost
         ResetSessionFlags();
     }
 
-    public static void OnDeviceDisposing(IntPtr device)
+    public static void OnDeviceDisposing(Device device)
     {
-        if (!_nativeLoaded || _ngxTornDown || NgxNative.Shutdown == null)
+        // DeviceChild.Device returns a temporary SharpDX Device wrapper for the
+        // same native pointer. Disposing such a wrapper must not tear down NGX.
+        if (device == null || !ReferenceEquals(device, _deviceOwner))
             return;
-        if (device == IntPtr.Zero)
+        if (!NgxApi.IsInitialized || _ngxTornDown)
             return;
-        if (_device != IntPtr.Zero && device != _device)
+        var pointer = device.NativePointer;
+        if (pointer == IntPtr.Zero)
+            return;
+        if (_device != IntPtr.Zero && pointer != _device)
             return;
 
         DebugLog.Write("NgxHost.OnDeviceDisposing");
         try
         {
-            NgxNative.Shutdown();
+            NgxApi.Shutdown();
         }
         catch (Exception e)
         {
-            MyLog.Default.Error("DLSS native shutdown failed: " + e);
+            MyLog.Default.Error("DLSS NGX shutdown failed: " + e);
         }
 
         _ngxTornDown = true;
         _device = IntPtr.Zero;
+        _deviceOwner = null;
         ResetSessionFlags();
     }
 
@@ -352,12 +322,12 @@ public static class NgxHost
     {
         switch (mode)
         {
-            case DlssMode.Performance: return NgxNative.QualityMaxPerf;
-            case DlssMode.Balanced: return NgxNative.QualityBalanced;
-            case DlssMode.Quality: return NgxNative.QualityMaxQuality;
-            case DlssMode.UltraPerformance: return NgxNative.QualityUltraPerformance;
-            case DlssMode.DLAA: return NgxNative.QualityDlaa;
-            default: return NgxNative.QualityMaxQuality;
+            case DlssMode.Performance: return NgxApi.QualityMaxPerf;
+            case DlssMode.Balanced: return NgxApi.QualityBalanced;
+            case DlssMode.Quality: return NgxApi.QualityMaxQuality;
+            case DlssMode.UltraPerformance: return NgxApi.QualityUltraPerformance;
+            case DlssMode.DLAA: return NgxApi.QualityDlaa;
+            default: return NgxApi.QualityMaxQuality;
         }
     }
 

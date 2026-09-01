@@ -10,6 +10,7 @@
     <RootNamespace>ClientPlugin</RootNamespace>
     <AssemblyName>SpaceEngineersDLSS</AssemblyName>
     <LangVersion>14</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
       
     <!-- Target platforms on Windows and Linux.
          VS 17 / ReSharper Build Tools MSBuild cannot host .NET 10 SDK tasks, so Full

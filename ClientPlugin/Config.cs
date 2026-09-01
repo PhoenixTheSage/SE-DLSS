@@ -19,6 +19,7 @@ public class Config : INotifyPropertyChanged
     private DlssMode mode = DlssMode.Quality;
     private DlssModel model = DlssModel.LatestModel;
     private float sharpness = 0.5f;
+    private bool useAnomalyMotionVectors = true;
 
     #endregion
 
@@ -87,9 +88,20 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref sharpness, value);
     }
 
+    [Separator("Motion vectors")]
+
+    [Checkbox(label: "Use Anomaly Framework",
+        description: "Use Anomaly's object-aware motion vectors when available. " +
+                     "Disable to use SE-DLSS camera-from-depth motion vectors.")]
+    public bool UseAnomalyMotionVectors
+    {
+        get => useAnomalyMotionVectors;
+        set => SetField(ref useAnomalyMotionVectors, value);
+    }
+
     [Separator("Status")]
 
-    [Button(label: "Show Status", description: "GPU, NGX support, and current resolutions")]
+    [Button(label: "Show Status", description: "GPU, NGX support, resolutions, and motion-vector source")]
     // ReSharper disable once UnusedMember.Global
     public static void ShowStatus()
     {
@@ -99,7 +111,8 @@ public class Config : INotifyPropertyChanged
             buttonType: MyMessageBoxButtonsType.OK,
             messageText: new StringBuilder(DlssStatus.CurrentText),
             messageCaption: new StringBuilder("DLSS Status"),
-            size: new Vector2(0.6f, 0.5f)
+            size: new Vector2(0.7f, 0.65f),
+            moveTextUp: false
         ));
     }
 
@@ -117,10 +130,11 @@ public class Config : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) ||
-            propertyName == nameof(Sharpness))
+            propertyName == nameof(Sharpness) || propertyName == nameof(UseAnomalyMotionVectors))
         {
             DebugLog.Write("config " + propertyName + " aa=" + antiAliasing + " mode=" + mode +
-                           " model=" + model + " sharpness=" + sharpness);
+                           " model=" + model + " sharpness=" + sharpness +
+                           " anomalyMv=" + useAnomalyMotionVectors);
             DlssRuntime.NotifyConfigChanged();
         }
         if (propertyName == nameof(AntiAliasing) && !SuppressApply)

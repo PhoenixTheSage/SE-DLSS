@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using ClientPlugin.Dlss;
@@ -77,6 +78,11 @@ public sealed class Plugin : IPlugin
 
     public void Update()
     {
+        if (disposed)
+            return;
+        // Pulsar finishes every plugin Init before the first Update. NGX D3D11
+        // init must not overlap Anomaly (or other plugins) Harmony.PatchAll.
+        DlssRuntime.NotifyPluginsReady();
     }
 
     // ReSharper disable once UnusedMember.Global
@@ -94,13 +100,33 @@ public sealed class Plugin : IPlugin
     }
 
     // ReSharper disable once UnusedMember.Global
-    public void LoadAssets(string folder)
+    public void LoadAssets(IReadOnlyDictionary<string, string> assets)
     {
-        if (disposed)
+        if (disposed || assets == null)
             return;
 
-        NgxHost.AddSearchPath(folder);
-        MyLog.Default.WriteLine("DLSS asset folder: " + folder);
-        DebugLog.Write("LoadAssets " + folder);
+        foreach (var pair in assets)
+            AddAssetSearchPath(pair.Value, pair.Key);
+    }
+
+    // Older Pulsar still calls this when an asset is named AssetFolder.
+    // ReSharper disable once UnusedMember.Global
+    public void LoadAssets(string folder)
+    {
+        AddAssetSearchPath(folder, null);
+    }
+
+    private void AddAssetSearchPath(string path, string name)
+    {
+        if (disposed || string.IsNullOrEmpty(path))
+            return;
+
+        if (File.Exists(path))
+            path = Path.GetDirectoryName(path);
+
+        NgxHost.AddSearchPath(path);
+        var label = string.IsNullOrEmpty(name) ? path : name + "=" + path;
+        MyLog.Default.WriteLine("DLSS asset: " + label);
+        DebugLog.Write("LoadAssets " + label);
     }
 }

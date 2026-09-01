@@ -7,7 +7,7 @@ Architecture supports [Rich HUD Framework](https://github.com/DarkHelmet/RichHud
 ## Requirements
 
 - Space Engineers with [Pulsar](https://github.com/SpaceGT/Pulsar), Windows, NVIDIA RTX, current Game Ready driver
-- PluginHub and `Assets/` already include `SeDlssNgx.dll` and NVIDIA's `nvngx_dlss.dll` (SDK 310.5+). For a local build, put both next to the plugin DLL in Pulsar's `Local` folder.
+- PluginHub and `Assets/` already include NVIDIA's `nvngx_dlss.dll` (SDK 310.5+). For a local build, put it next to the plugin DLL in Pulsar's `Local` folder.
 
 ## Settings
 
@@ -17,17 +17,16 @@ Plugin config or **Options → Graphics → Anti-aliasing**:
 - **Mode** — Quality, Balanced, Performance, Ultra Performance, or DLAA
 - **Model** — Latest (transformer K), J / K / L / M, or CNN F. NVIDIA App cannot override this unofficial title.
 - **Sharpness** — optional; transformer models may ignore it
-- **Show Status** — NGX, GPU, internal vs output resolution
+- **Show Status** — NGX, GPU, internal vs output resolution, motion-vector source
 
 MSAA is not in the current graphics UI and is incompatible with DLSS.
 
-Moving grids can ghost: motion vectors are camera-reprojected from depth, not per-object velocity.
+Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is also loaded. Anomaly is optional: when present, this plugin binds its velocity buffer automatically (object motion); when absent, the camera path is unchanged. No PluginHub dependency is declared.
 
 ## Building
 
 - .NET Framework 4.8.1 targeting pack and .NET 10 SDK
 - Build `ClientPlugin` (deploys to Pulsar `Legacy\Local` or `Interim\Local`; close the game if the DLL is in use)
-- Build `Native/SeDlssNgx/SeDlssNgx.vcxproj` (x64 Release) or run `Native/SeDlssNgx/build.bat` for `Assets/SeDlssNgx.dll`
 
 Debug with Pulsar `Legacy.exe` / `Interim.exe` and `-sources`.
 
@@ -38,6 +37,8 @@ Debug with Pulsar `Legacy.exe` / `Interim.exe` and `-sources`.
 ## Known interactions
 
 [SmoothFrames](https://github.com/WhiteFang34/SmoothFrames) also patches the render thread. Jitter plus camera interpolation can interact.
+
+[Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is optional. It is discovered at runtime by type name (`VelocityRegistry.Active`); this repo does not reference Anomaly at compile time.
 
 ## Bug reports
 
