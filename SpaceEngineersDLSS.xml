@@ -15,10 +15,9 @@ Adds NVIDIA DLSS &amp; DLAA 4.5 to Space Engineers. Requires NVIDA DLSS-capable 
     </SourceDirectories>
 
     <!-- NVIDIA DLSS redistributable. Placement=Bin copies it next to plugin.dll.
-         Path is in-repo; Sha256 is required for PluginHub. -->
+         Path is in-repo; -->
     <Asset Name="NvngxDlss"
            Path="Assets/nvngx_dlss.dll"
-           Sha256="be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e"
            Placement="Bin" />
 
     <!-- Anomaly is optional and discovered at runtime. Do not add DependencyIds
@@ -26,6 +25,6 @@ Adds NVIDIA DLSS &amp; DLAA 4.5 to Space Engineers. Requires NVIDA DLSS-capable 
 
     <Platforms>Windows</Platforms>
 
-    <Commit>ef9d5976ffca94130c320ffb86e900df5b950df1</Commit>
+    <Commit>c58590a1d908b514d3da40f38d2cc81cfefdf179</Commit>
 
 </PluginData>
