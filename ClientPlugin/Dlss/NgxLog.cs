@@ -97,7 +97,7 @@ internal static class NgxLog
                 _lastWritten = line;
             }
 
-            DebugLog.Write(line);
+            DebugLog.WriteFrame(line);
         }
         catch
         {

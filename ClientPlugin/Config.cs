@@ -92,7 +92,8 @@ public class Config : INotifyPropertyChanged
 
     [Checkbox(label: "Use Anomaly Framework",
         description: "Use Anomaly's object-aware motion vectors when available. " +
-                     "Disable to use SE-DLSS camera-from-depth motion vectors.")]
+                     "Disable to use camera-from-depth motion vectors. " +
+                     "Reactive mask and AfterUpscale notify stay on when Anomaly is loaded.")]
     public bool UseAnomalyMotionVectors
     {
         get => useAnomalyMotionVectors;
@@ -101,7 +102,7 @@ public class Config : INotifyPropertyChanged
 
     [Separator("Status")]
 
-    [Button(label: "Show Status", description: "GPU, NGX support, resolutions, and motion-vector source")]
+    [Button(label: "Show Status", description: "GPU, NGX support, resolutions, and Anomaly buffer status")]
     // ReSharper disable once UnusedMember.Global
     public static void ShowStatus()
     {

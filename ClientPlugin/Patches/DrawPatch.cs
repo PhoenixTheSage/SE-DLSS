@@ -15,8 +15,8 @@ internal static class DrawPatch
         {
             GpuSupport.TryProbe();
             DlssRuntime.SnapshotOutputSize();
-            DlssRuntime.BeginFrameResources();
             DlssRuntime.EvaluatedThisFrame = false;
+            DlssRuntime.BeginFrameResources();
             if (DlssRuntime.WantsDlss)
             {
                 DlssRuntime.TryPrepareFrame();

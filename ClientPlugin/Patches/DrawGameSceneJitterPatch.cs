@@ -8,6 +8,7 @@ namespace ClientPlugin.Patches;
 internal static class DrawGameSceneJitterPatch
 {
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.First)]
     private static void Prefix()
     {
         if (!DlssRuntime.IsLive)

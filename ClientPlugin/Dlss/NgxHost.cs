@@ -183,12 +183,13 @@ public static class NgxHost
         int reset,
         float sharpness,
         uint renderWidth,
-        uint renderHeight)
+        uint renderHeight,
+        IntPtr biasCurrentColorMask = default(IntPtr))
     {
         if (!IsReady || _gpuRejected)
             return false;
         if (!NgxApi.Evaluate(device, context, color, depth, motionVectors, output,
-                jitterX, jitterY, reset, sharpness, renderWidth, renderHeight))
+                jitterX, jitterY, reset, sharpness, renderWidth, renderHeight, biasCurrentColorMask))
         {
             LastError = NgxApi.LastError;
             DebugLog.Write("Evaluate failed reset=" + reset + " jitter=" + jitterX + "," + jitterY +

@@ -26,6 +26,7 @@ internal static class NgxApi
     private const int FlagMvLowRes = 1 << 1;
     private const int FlagDepthInverted = 1 << 3;
     private const int FlagAutoExposure = 1 << 6;
+    // Anomaly velocity is unjittered pixel-space at internal res: MVJittered off, MVLowRes on.
     private const int CreateFlags = FlagDepthInverted | FlagAutoExposure | FlagMvLowRes;
     private const int PresetF = 6;
     private const int PresetJ = 10;
@@ -291,7 +292,8 @@ internal static class NgxApi
         int reset,
         float sharpness,
         uint renderWidth,
-        uint renderHeight)
+        uint renderHeight,
+        IntPtr biasCurrentColorMask = default(IntPtr))
     {
         lock (Gate)
         {
@@ -319,6 +321,8 @@ internal static class NgxApi
         parameters.SetD3D11(NgxNames.Depth, depth.NativePointer);
         if (motion != IntPtr.Zero)
             parameters.SetD3D11(NgxNames.MotionVectors, motion);
+        if (biasCurrentColorMask != IntPtr.Zero)
+            parameters.SetD3D11(NgxNames.BiasCurrentColorMask, biasCurrentColorMask);
         var colorGet = parameters.GetD3D11(NgxNames.Color, out var colorParameter);
         var outputGet = parameters.GetD3D11(NgxNames.Output, out var outputParameter);
         var depthGet = parameters.GetD3D11(NgxNames.Depth, out var depthParameter);
@@ -340,6 +344,7 @@ internal static class NgxApi
                      " color=" + DlssD3d.Describe(color) +
                      " depth=" + DlssD3d.Describe(depth) +
                      " mv=" + DlssD3d.Describe(motion) +
+                     " bias=" + DlssD3d.Describe(biasCurrentColorMask) +
                      " dest=" + destDesc +
                      " evalOut=" + DlssD3d.Describe(evalOutput, copyBack ? null : output) +
                      " copyBack=" + (copyBack ? 1 : 0) +

@@ -12,7 +12,9 @@ internal static class ToneMappingPatch
 {
     private static bool _exceptionLogged;
 
+    // After Anomaly AfterTonemap (Priority.First). Evaluate LDR, then AfterUpscale.
     [HarmonyPostfix]
+    [HarmonyPriority(Priority.Low)]
     private static void Postfix(ref IBorrowedCustomTexture __result)
     {
         if (!DlssRuntime.IsLive || DlssRuntime.EvaluatedThisFrame || __result == null)
@@ -37,6 +39,15 @@ internal static class ToneMappingPatch
             __result = dest;
             DlssRuntime.EvaluatedThisFrame = true;
             DlssRuntime.ApplyOutputSpace();
+            try
+            {
+                AnomalyHook.NotifyUpscaleComplete();
+            }
+            finally
+            {
+                MyRender11.RC?.ClearState();
+            }
+
             DebugLog.WriteFrame("ToneMapping LDR evaluate src=" + DlssRuntime.InternalWidth + "x" +
                                 DlssRuntime.InternalHeight + " dest=" + dest.Size);
         }

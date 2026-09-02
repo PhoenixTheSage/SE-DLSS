@@ -33,8 +33,17 @@ public static class DlssStatus
                 .Append(" x ")
                 .Append(DlssRuntime.OutputHeight)
                 .AppendLine();
-            sb.Append("LDR evaluate this frame: ").AppendLine(DlssRuntime.EvaluatedThisFrame ? "yes" : "no");
-            AnomalyVelocity.AppendStatus(sb);
+            sb.Append("LDR evaluate: ");
+            if (DlssRuntime.EvaluateCount <= 0)
+                sb.AppendLine("no");
+            else
+                sb.Append("yes (").Append(DlssRuntime.EvaluateCount).AppendLine(" this session)");
+            sb.Append("Jitter: ")
+                .Append(Jitter.OffsetX.ToString("0.###"))
+                .Append(',')
+                .Append(Jitter.OffsetY.ToString("0.###"))
+                .AppendLine();
+            AnomalyHook.AppendStatus(sb);
             sb.Append("Search paths: ").AppendLine(NgxHost.SearchPathSummary());
             sb.AppendLine("NGX ABI: oleaut-6");
 #if DEBUG

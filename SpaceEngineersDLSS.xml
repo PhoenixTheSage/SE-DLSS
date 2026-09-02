@@ -22,8 +22,9 @@ Adds NVIDIA DLSS &amp; DLAA 4.5 to Space Engineers. Requires NVIDA DLSS-capable 
            Placement="Bin" /> -->
     <AssetFolder>Assets</AssetFolder>
 
-    <!-- Anomaly is optional and discovered at runtime. Do not add DependencyIds
-         until Anomaly is on PluginHub; camera motion vectors remain the fallback. -->
+    <!-- Anomaly is optional and discovered at runtime (velocity, catalog,
+         AfterUpscale notify). Do not add DependencyIds until Anomaly is on
+         PluginHub; camera motion vectors remain the fallback. -->
 
     <Platforms>Windows</Platforms>
 

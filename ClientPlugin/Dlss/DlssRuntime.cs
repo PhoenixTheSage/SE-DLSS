@@ -16,7 +16,9 @@ public static class DlssRuntime
     public static int OutputHeight { get; private set; }
     public static bool LastEvaluateFailed { get; private set; }
     public static bool UsedExternalVelocity { get; private set; }
+    public static bool UsedReactiveMask { get; private set; }
     public static bool EvaluatedThisFrame { get; set; }
+    public static int EvaluateCount { get; private set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
     private static bool _outputDepthReady;
     private static ICustomTexture _ldrTexture;
@@ -57,7 +59,7 @@ public static class DlssRuntime
         if (_pluginsReady)
             return;
         _pluginsReady = true;
-        AnomalyVelocity.Probe();
+        AnomalyHook.Probe();
         DebugLog.Write("plugins ready; NGX init allowed");
     }
 
@@ -68,6 +70,7 @@ public static class DlssRuntime
         _consecutiveEvaluateFails = 0;
         LastEvaluateFailed = false;
         Jitter.Reset();
+        AnomalyHook.InvalidateHistory();
         DisableConsoleDrs();
         NgxHost.AllowRetry();
         DebugLog.Write(
@@ -103,10 +106,12 @@ public static class DlssRuntime
         _resetHistory = true;
         LastEvaluateFailed = false;
         UsedExternalVelocity = false;
+        UsedReactiveMask = false;
         EvaluatedThisFrame = false;
+        EvaluateCount = 0;
         _consecutiveEvaluateFails = 0;
         _pluginsReady = false;
-        AnomalyVelocity.Reset();
+        AnomalyHook.Reset();
 #if DEBUG
         _lastPrepareLog = null;
 #endif
@@ -230,6 +235,8 @@ public static class DlssRuntime
     public static void BeginFrameResources()
     {
         _outputDepthReady = false;
+        UsedReactiveMask = false;
+        AnomalyHook.BeginFrame();
     }
 
     public static void ReleaseOutputDepth()
@@ -507,7 +514,7 @@ public static class DlssRuntime
             var allowAnomaly = Config.Current?.UseAnomalyMotionVectors ?? true;
             var externalMv = IntPtr.Zero;
             var externalHistory = false;
-            var usedExternal = allowAnomaly && AnomalyVelocity.TryGetLive(
+            var usedExternal = allowAnomaly && AnomalyHook.TryGetLive(
                 InternalWidth, InternalHeight, out externalMv, out externalHistory);
             var historyValid = Jitter.HasPrevious;
             if (usedExternal)
@@ -518,7 +525,7 @@ public static class DlssRuntime
             else
             {
                 if (allowAnomaly)
-                    AnomalyVelocity.NoteCameraFallback();
+                    AnomalyHook.NoteCameraFallback();
                 if (Jitter.HasPrevious)
                 {
                     Jitter.CopyToArray(Jitter.JitteredInvViewProjection, InvViewProj);
@@ -536,11 +543,18 @@ public static class DlssRuntime
                 }
             }
 
+            var reactive = IntPtr.Zero;
+            var usedReactive = AnomalyHook.TryGetReactiveMask(InternalWidth, InternalHeight, out reactive);
+            UsedReactiveMask = usedReactive;
+
             var sourceChanged = usedExternal != UsedExternalVelocity;
             UsedExternalVelocity = usedExternal;
+            var cameraCut = Jitter.ConsumeCameraCut();
+            if (cameraCut)
+                AnomalyHook.InvalidateHistory();
             var motionVectorsFailed = !usedExternal && Jitter.HasPrevious && mvec == IntPtr.Zero;
             var reset = _resetHistory || _configChanged || !historyValid || motionVectorsFailed ||
-                        sourceChanged || Jitter.ConsumeCameraCut()
+                        sourceChanged || cameraCut
                 ? 1
                 : 0;
             _configChanged = false;
@@ -558,7 +572,8 @@ public static class DlssRuntime
                 reset,
                 Config.Current.Sharpness,
                 (uint)InternalWidth,
-                (uint)InternalHeight);
+                (uint)InternalHeight,
+                usedReactive ? reactive : IntPtr.Zero);
             if (!ok)
             {
                 _resetHistory = true;
@@ -573,10 +588,12 @@ public static class DlssRuntime
             else
             {
                 _consecutiveEvaluateFails = 0;
+                EvaluateCount++;
                 DebugLog.WriteFrame("TryEvaluate ok dest=" + destination.Size.X + "x" + destination.Size.Y +
                                     " src=" + source.Size.X + "x" + source.Size.Y +
                                     " reset=" + reset +
-                                    " mv=" + (usedExternal ? "anomaly" : mvec != IntPtr.Zero ? "camera" : "none"));
+                                    " mv=" + (usedExternal ? "anomaly" : mvec != IntPtr.Zero ? "camera" : "none") +
+                                    " reactive=" + (usedReactive ? "anomaly" : "none"));
             }
 
             return ok;

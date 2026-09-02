@@ -19,6 +19,7 @@ internal static class NgxNames
     internal static readonly IntPtr Output = Alloc("Output");
     internal static readonly IntPtr Depth = Alloc("Depth");
     internal static readonly IntPtr MotionVectors = Alloc("MotionVectors");
+    internal static readonly IntPtr BiasCurrentColorMask = Alloc("DLSS.Input.Bias.Current.Color.Mask");
     internal static readonly IntPtr JitterOffsetX = Alloc("Jitter.Offset.X");
     internal static readonly IntPtr JitterOffsetY = Alloc("Jitter.Offset.Y");
     internal static readonly IntPtr MvScaleX = Alloc("MV.Scale.X");

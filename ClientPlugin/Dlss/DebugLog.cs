@@ -12,15 +12,19 @@ namespace ClientPlugin.Dlss;
 
 /// <summary>
 /// Writes a debug-only log beside SpaceEngineers.log; call sites are omitted from Release builds.
+/// <see cref="Write"/> is for one-shot events. <see cref="WriteFrame"/> is for per-frame
+/// sites: first line immediately, then at most once per <see cref="HeartbeatSeconds"/>.
 /// </summary>
 public static class DebugLog
 {
     public const string FileName = "SpaceEngineersDLSS.debug.log";
+    public const int HeartbeatSeconds = 5;
 
     public static string FilePath { get; private set; }
 
     private static readonly object Gate = new();
-    private static readonly Dictionary<string, string> LastFrameByCaller = new();
+    private static readonly Dictionary<string, FrameSite> Sites = new();
+    private static readonly long HeartbeatTicks = Stopwatch.Frequency * HeartbeatSeconds;
     private static StreamWriter _writer;
 
     [Conditional("DEBUG")]
@@ -43,6 +47,7 @@ public static class DebugLog
                 _writer.WriteLine("Space Engineers DLSS debug log");
                 _writer.WriteLine("opened {0:o}", DateTime.Now);
                 _writer.WriteLine("folder {0}", dir);
+                _writer.WriteLine("frame sites log first occurrence, then every {0}s", HeartbeatSeconds);
                 _writer.WriteLine();
                 try
                 {
@@ -72,13 +77,45 @@ public static class DebugLog
     [Conditional("DEBUG")]
     public static void Write(string message)
     {
-        WriteCore(message, force: true);
+        WriteLine(message);
     }
 
     [Conditional("DEBUG")]
-    public static void WriteFrame(string message, [CallerMemberName] string caller = null)
+    public static void WriteFrame(
+        string message,
+        [CallerMemberName] string caller = null,
+        [CallerFilePath] string file = null,
+        [CallerLineNumber] int line = 0)
     {
-        WriteCore(message, force: false, caller ?? "");
+        if (string.IsNullOrEmpty(message))
+            return;
+        var key = (file ?? "") + ":" + line + ":" + (caller ?? "");
+        lock (Gate)
+        {
+            if (_writer == null)
+                return;
+
+            var now = Stopwatch.GetTimestamp();
+            if (Sites.TryGetValue(key, out var site))
+            {
+                site.Repeat++;
+                site.Message = message;
+                if (now - site.LastWriteTicks < HeartbeatTicks)
+                    return;
+                WriteLineUnlocked(FormatHeartbeat(site));
+                site.Repeat = 0;
+                site.LastWriteTicks = now;
+                return;
+            }
+
+            Sites[key] = new FrameSite
+            {
+                Message = message,
+                LastWriteTicks = now,
+                Repeat = 0
+            };
+            WriteLineUnlocked(message);
+        }
     }
 
     [Conditional("DEBUG")]
@@ -99,11 +136,11 @@ public static class DebugLog
                 // ignored
             }
             _writer = null;
-            LastFrameByCaller.Clear();
+            Sites.Clear();
         }
     }
 
-    private static void WriteCore(string message, bool force, string caller = "")
+    private static void WriteLine(string message)
     {
         if (string.IsNullOrEmpty(message))
             return;
@@ -111,32 +148,37 @@ public static class DebugLog
         {
             if (_writer == null)
                 return;
-            if (!force)
-            {
-                if (LastFrameByCaller.TryGetValue(caller, out var previous) && previous == message)
-                    return;
-                LastFrameByCaller[caller] = message;
-            }
+            WriteLineUnlocked(message);
+        }
+    }
 
+    private static void WriteLineUnlocked(string message)
+    {
+        try
+        {
+            _writer.Write(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture));
+            _writer.Write(" ");
+            _writer.WriteLine(message);
+        }
+        catch
+        {
             try
             {
-                _writer.Write(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture));
-                _writer.Write(" ");
-                _writer.WriteLine(message);
+                _writer.Dispose();
             }
             catch
             {
-                try
-                {
-                    _writer.Dispose();
-                }
-                catch
-                {
-                    // ignored
-                }
-                _writer = null;
+                // ignored
             }
+            _writer = null;
         }
+    }
+
+    private static string FormatHeartbeat(FrameSite site)
+    {
+        if (site.Repeat <= 1)
+            return site.Message;
+        return site.Message + "  x" + site.Repeat;
     }
 
     private static string ResolveUserDataDir()
@@ -154,5 +196,12 @@ public static class DebugLog
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "SpaceEngineers");
+    }
+
+    private sealed class FrameSite
+    {
+        public string Message;
+        public long LastWriteTicks;
+        public int Repeat;
     }
 }
