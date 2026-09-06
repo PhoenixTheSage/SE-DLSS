@@ -10,6 +10,17 @@ namespace ClientPlugin.Dlss;
 
 public static class DlssRuntime
 {
+    public static string LastBindingEvidence { get; private set; }
+    internal static string BindingContext { get; private set; }
+    private static string _lastVelocitySource;
+    private static long _evaluateAttempt;
+    private static long _renderFrame;
+    private static int _evaluatedWidth, _evaluatedHeight;
+    internal static void RecordBinding(string evidence)
+    {
+        LastBindingEvidence = BindingContext + " " + evidence;
+        DebugLog.WriteFrame(LastBindingEvidence);
+    }
     public static int InternalWidth { get; private set; }
     public static int InternalHeight { get; private set; }
     public static int OutputWidth { get; private set; }
@@ -109,6 +120,9 @@ public static class DlssRuntime
         UsedReactiveMask = false;
         EvaluatedThisFrame = false;
         EvaluateCount = 0;
+        LastBindingEvidence = BindingContext = _lastVelocitySource = null;
+        _evaluateAttempt = _renderFrame = 0;
+        _evaluatedWidth = _evaluatedHeight = 0;
         _consecutiveEvaluateFails = 0;
         _pluginsReady = false;
         AnomalyHook.Reset();
@@ -236,6 +250,7 @@ public static class DlssRuntime
     {
         _outputDepthReady = false;
         UsedReactiveMask = false;
+        _renderFrame++;
         AnomalyHook.BeginFrame();
     }
 
@@ -516,6 +531,15 @@ public static class DlssRuntime
             var externalHistory = false;
             var usedExternal = allowAnomaly && AnomalyHook.TryGetLive(
                 InternalWidth, InternalHeight, out externalMv, out externalHistory);
+            var rejection = allowAnomaly ? AnomalyHook.SelectionReason : "integration disabled";
+            var textureEvidence = "";
+            if (usedExternal && !DlssD3d.ValidateVelocity(device, externalMv, InternalWidth, InternalHeight,
+                    out textureEvidence))
+            {
+                usedExternal = false;
+                rejection = "incompatible texture/device: " + textureEvidence;
+            }
+            var selectedSource = usedExternal ? "Anomaly/" + AnomalyHook.SelectedSource : "camera";
             var historyValid = Jitter.HasPrevious;
             if (usedExternal)
             {
@@ -547,16 +571,25 @@ public static class DlssRuntime
             var usedReactive = AnomalyHook.TryGetReactiveMask(InternalWidth, InternalHeight, out reactive);
             UsedReactiveMask = usedReactive;
 
-            var sourceChanged = usedExternal != UsedExternalVelocity;
+            var sourceChanged = selectedSource != _lastVelocitySource;
+            _lastVelocitySource = selectedSource;
             UsedExternalVelocity = usedExternal;
             var cameraCut = Jitter.ConsumeCameraCut();
             if (cameraCut)
                 AnomalyHook.InvalidateHistory();
             var motionVectorsFailed = !usedExternal && Jitter.HasPrevious && mvec == IntPtr.Zero;
-            var reset = _resetHistory || _configChanged || !historyValid || motionVectorsFailed ||
-                        sourceChanged || cameraCut
-                ? 1
-                : 0;
+            var resetReason = VelocityAcceptance.ResetReason(_resetHistory, _configChanged, historyValid,
+                motionVectorsFailed, sourceChanged, cameraCut);
+            if (_evaluatedWidth != InternalWidth || _evaluatedHeight != InternalHeight)
+                resetReason = resetReason == "none" ? "resolution-change" : resetReason + ",resolution-change";
+            _evaluatedWidth = InternalWidth;
+            _evaluatedHeight = InternalHeight;
+            var reset = resetReason == "none" ? 0 : 1;
+            BindingContext = "Evaluate #" + (++_evaluateAttempt) + " frame=" + _renderFrame + " source=" + selectedSource +
+                " fallback=" + (usedExternal ? "none" : rejection) + " reset=" + resetReason +
+                " producerTexture=" + (usedExternal ? textureEvidence : "local") +
+                " producerFrame=unavailable";
+            LastBindingEvidence = BindingContext + " pending NGX binding";
             _configChanged = false;
             _resetHistory = false;
 

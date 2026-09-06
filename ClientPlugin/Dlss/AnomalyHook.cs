@@ -23,12 +23,15 @@ internal static class AnomalyHook
     public const int ConventionUnjittered = 1;
     public const int ConventionPixelSpace = 2;
     public const int ConventionMatchesRenderResolution = 4;
+    public const int ConventionCurrentToPrevious = 8;
+    public static string SelectionReason { get; private set; } = "not evaluated";
+    public static string SelectedSource { get; private set; }
+    private static PropertyInfo _velocityProbe;
     public const int ExpectedConvention =
-        ConventionUnjittered | ConventionPixelSpace | ConventionMatchesRenderResolution;
+        ConventionUnjittered | ConventionPixelSpace | ConventionMatchesRenderResolution | ConventionCurrentToPrevious;
 
     private static readonly object Gate = new();
     private static readonly object[] ReactiveNameArgs = { ReactiveMaskName };
-    private static readonly object[] VelocityNameArgs = { VelocityName };
 
     private static PropertyInfo _activeProperty;
     private static MethodInfo _catalogActive;
@@ -128,6 +131,9 @@ internal static class AnomalyHook
             _invalidateHistory = null;
             _anomalyConfigCurrent = null;
             _velocitySource = null;
+            _velocityProbe = null;
+            SelectionReason = "not evaluated";
+            SelectedSource = null;
             _registryAssembly = null;
             _loggedFound = _loggedMissing = _loggedUnavailable = false;
             _loggedConvention = _loggedSize = _loggedReactiveSize = false;
@@ -139,23 +145,47 @@ internal static class AnomalyHook
     {
         native = IntPtr.Zero;
         historyValid = false;
+        SelectionReason = "unavailable or unreadable velocity";
+        SelectedSource = null;
         if (!TryReadVelocity(out var available, out var resource, out var width, out var height,
                 out var convention, out historyValid))
             return false;
         if (!available || resource == IntPtr.Zero)
             return false;
 
-        if ((convention & ExpectedConvention) != ExpectedConvention)
-            LogConventionOnce(convention);
-
-        if (expectedWidth > 0 && expectedHeight > 0 &&
-            (width != expectedWidth || height != expectedHeight))
+        if (convention != ExpectedConvention)
         {
+            SelectionReason = "incompatible convention 0x" + convention.ToString("x");
+            LogConventionOnce(convention);
+            return false;
+        }
+        try
+        {
+            var config = _anomalyConfigCurrent?.GetValue(null);
+            var probe = _velocityProbe?.GetValue(config);
+            if (probe == null || Convert.ToInt32(probe) != 0)
+            {
+                SelectionReason = probe == null ? "probe state unknown" : "probe active: " + probe;
+                return false;
+            }
+        }
+        catch
+        {
+            SelectionReason = "probe state unreadable";
+            return false;
+        }
+
+        if (expectedWidth <= 0 || expectedHeight <= 0 ||
+            width != expectedWidth || height != expectedHeight)
+        {
+            SelectionReason = "velocity size mismatch";
             LogSizeOnce(width, height, expectedWidth, expectedHeight);
             return false;
         }
 
         native = resource;
+        SelectedSource = ReadVelocitySource() ?? "unknown producer";
+        SelectionReason = "accepted";
         return true;
     }
 
@@ -255,47 +285,7 @@ internal static class AnomalyHook
     {
         if (sb == null)
             return;
-        if (Config.Current != null && !Config.Current.UseAnomalyMotionVectors)
-        {
-            sb.AppendLine("Motion vectors: camera (Anomaly integration disabled)");
-        }
-        else
-        {
-            Probe();
-            if (!TryReadVelocity(out var available, out var resource, out var width, out var height,
-                    out var convention, out var historyValid))
-            {
-                sb.AppendLine(RegistryFound
-                    ? "Motion vectors: camera (Anomaly unreadable)"
-                    : "Motion vectors: camera (Anomaly not loaded)");
-            }
-            else if (!available || resource == IntPtr.Zero)
-            {
-                sb.AppendLine("Motion vectors: camera (Anomaly buffer not ready)");
-            }
-            else
-            {
-                var sizeOk = DlssRuntime.InternalWidth <= 0 ||
-                             (width == DlssRuntime.InternalWidth && height == DlssRuntime.InternalHeight);
-                sb.Append("Motion vectors: ");
-                if (!sizeOk)
-                    sb.Append("camera (Anomaly size mismatch) ");
-                else if (!DlssRuntime.UsedExternalVelocity)
-                    sb.Append("camera (Anomaly live, not bound last evaluate) ");
-                else
-                {
-                    sb.Append("Anomaly ");
-                    var source = ReadVelocitySource();
-                    if (!string.IsNullOrEmpty(source))
-                        sb.Append(source).Append(' ');
-                }
-
-                sb.Append(width).Append('x').Append(height);
-                sb.Append(" history=").Append(historyValid ? "yes" : "no");
-                sb.Append(" convention=0x").Append(convention.ToString("x"));
-                sb.AppendLine();
-            }
-        }
+        sb.AppendLine(DlssRuntime.LastBindingEvidence ?? "Motion vectors: no evaluate attempted");
 
         AppendReactiveStatus(sb);
         AppendUpscaleStatus(sb);
@@ -393,12 +383,8 @@ internal static class AnomalyHook
             }
         }
 
-        // Catalog Active("velocity") aliases the same producer; no convention flags.
-        if (!TryReadCatalog(VelocityNameArgs, out available, out native, out width, out height))
-            return false;
-        convention = ExpectedConvention;
-        historyValid = Jitter.HasPrevious;
-        return true;
+        // Catalog does not expose direction/history; never invent missing metadata.
+        return false;
     }
 
     private static bool TryReadCatalog(object[] nameArgs, out bool available, out IntPtr native, out int width,
@@ -570,6 +556,7 @@ internal static class AnomalyHook
             return false;
         _anomalyConfigCurrent = current;
         _velocitySource = source;
+        _velocityProbe = configType.GetProperty("VelocityProbe", BindingFlags.Public | BindingFlags.Instance);
         return true;
     }
 
@@ -626,7 +613,8 @@ internal static class AnomalyHook
     {
         if (bufferType == null)
             return false;
-        if (_bufferType == bufferType && _isAvailable != null)
+        if (_bufferType == bufferType && _isAvailable != null && _nativeResource != null &&
+            _width != null && _height != null)
         {
             if (!requireVelocityFields)
                 return true;
@@ -705,7 +693,7 @@ internal static class AnomalyHook
         _loggedConvention = true;
         MyLog.Default.Warning(
             "DLSS: Anomaly velocity convention 0x" + convention.ToString("x") +
-            " is missing expected flags 0x" + ExpectedConvention.ToString("x"));
+            " rejected; required flags 0x" + ExpectedConvention.ToString("x"));
         DebugLog.Write("Anomaly convention 0x" + convention.ToString("x"));
     }
 

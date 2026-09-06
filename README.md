@@ -50,3 +50,5 @@ Debug with Pulsar `Legacy.exe` / `Interim.exe` and `-sources`.
 ## Bug reports
 
 Open an issue with **Show Status** text, GPU, driver version, and `SpaceEngineers.log`.
+
+Anomaly consumer verification and in-game acceptance procedure: [Tests/ANOMALY-ACCEPTANCE.md](Tests/ANOMALY-ACCEPTANCE.md). Numerical reprojection and ghosting acceptance remain pending in-game captures.

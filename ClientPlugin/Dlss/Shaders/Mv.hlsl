@@ -28,7 +28,7 @@ float2 CameraVelocity(float2 uv, float depth)
     prevClip /= max(prevClip.w, 1e-6);
     float2 currUv = float2(currClip.x * 0.5 + 0.5, 0.5 - currClip.y * 0.5);
     float2 prevUv = float2(prevClip.x * 0.5 + 0.5, 0.5 - prevClip.y * 0.5);
-    return (currUv - prevUv) * RenderSize;
+    return (prevUv - currUv) * RenderSize;
 }
 
 float4 PSMain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target

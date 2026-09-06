@@ -255,6 +255,46 @@ internal static class DlssD3d
         }
     }
 
+    internal static bool ValidateVelocity(Device device, IntPtr pointer, int width, int height, out string evidence)
+    {
+        evidence = "invalid velocity texture";
+        if (pointer == IntPtr.Zero || device == null)
+            return false;
+        var iid = typeof(Texture2D).GUID;
+        IntPtr queried = IntPtr.Zero;
+        try
+        {
+#if NETFRAMEWORK
+            if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, ref iid, out queried) != 0)
+#else
+            if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, in iid, out queried) != 0)
+#endif
+                return false;
+            // QueryInterface owns one reference; never dispose the producer's borrowed pointer.
+            using (var texture = new Texture2D(queried))
+            {
+                queried = IntPtr.Zero;
+                var desc = texture.Description;
+                evidence = Describe(pointer, texture);
+                using (var owner = texture.Device)
+                    return owner.NativePointer == device.NativePointer &&
+                           desc.Width == width && desc.Height == height &&
+                           desc.Format == Format.R16G16_Float && desc.SampleDescription.Count == 1 &&
+                           desc.ArraySize == 1 && (desc.BindFlags & BindFlags.ShaderResource) != 0;
+            }
+        }
+        catch (Exception e)
+        {
+            evidence = "velocity texture unreadable: " + e.GetType().Name;
+            return false;
+        }
+        finally
+        {
+            if (queried != IntPtr.Zero)
+                System.Runtime.InteropServices.Marshal.Release(queried);
+        }
+    }
+
     internal static string Describe(Resource resource)
     {
         return Describe(resource == null ? IntPtr.Zero : resource.NativePointer, resource);

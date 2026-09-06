@@ -373,7 +373,14 @@ internal static class NgxApi
             SetError("EvaluateFeature export is unavailable");
             return false;
         }
+        var binding = "NGX mv=0x" + motion.ToInt64().ToString("X") +
+            " parameter=0x" + motionParameter.ToInt64().ToString("X") +
+            " parameterResult=0x" + ((uint)motionGet).ToString("X8") +
+            " render=" + renderWidth + "x" + renderHeight + " scale=(1,1) flags=0x" +
+            CreateFlags.ToString("X") + " zeroSubstitute=" + (motionVectors == IntPtr.Zero);
+        DlssRuntime.RecordBinding(binding + " submitted");
         var result = evaluate(context.NativePointer, _dlss, parameters.Pointer, IntPtr.Zero);
+        DlssRuntime.RecordBinding(binding + " result=0x" + ((uint)result).ToString("X8"));
         if (NgxResult.Failed(result))
         {
             SetError("EvaluateFeature failed (0x" + ((uint)result).ToString("X8") + " " +
