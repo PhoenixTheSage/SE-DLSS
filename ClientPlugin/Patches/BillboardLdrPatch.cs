@@ -67,7 +67,7 @@ internal static class BillboardOutputPass
 
     public static void PublishCompletedFrame()
     {
-        if (!DlssRuntime.IsLive)
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive)
             return;
 
         int count;
@@ -94,7 +94,7 @@ internal static class BillboardOutputPass
 
     public static void NoteAdd(MyBillboard billboard)
     {
-        if (!DlssRuntime.IsLive || !IsPostPp(billboard))
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || !IsPostPp(billboard))
             return;
         lock (SnapshotLock)
         {
@@ -106,7 +106,7 @@ internal static class BillboardOutputPass
 
     public static void NoteAdds(IEnumerable<MyBillboard> billboards)
     {
-        if (!DlssRuntime.IsLive || billboards == null)
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || billboards == null)
             return;
         lock (SnapshotLock)
         {
@@ -129,7 +129,8 @@ internal static class BillboardOutputPass
         LogHudOnce("RenderPostPP enter live=" + DlssRuntime.IsLive +
                    " target=" + (target != null ? target.Size.ToString() : "null") +
                    " pending=" + PendingCount());
-        if (!DlssRuntime.IsLive || _drawingPostPp || rc == null || target == null)
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || _drawingPostPp ||
+            rc == null || target == null)
             return false;
 
         BindUnjitteredFrameConstants();
@@ -138,7 +139,7 @@ internal static class BillboardOutputPass
 
     public static void TryDrawAfterSceneBlit()
     {
-        if (!DlssRuntime.IsLive || _drewHudThisScene)
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || _drewHudThisScene)
             return;
         var dest = MyRender11.Backbuffer;
         var rc = MyRender11.RC;
@@ -219,7 +220,7 @@ internal static class BillboardOutputPass
 
     public static bool TryRender(MyRenderContext rc, ISrvBindable depthRead, IRtvBindable target, int bucket)
     {
-        if (!DlssRuntime.IsLive || rc == null || target == null)
+        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || rc == null || target == null)
             return false;
         var sceneDepth = MyGBuffer.Main?.ResolvedDepthStencil;
         if (sceneDepth == null || (target.Size.X == sceneDepth.Size.X && target.Size.Y == sceneDepth.Size.Y))

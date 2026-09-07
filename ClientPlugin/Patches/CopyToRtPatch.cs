@@ -17,6 +17,8 @@ internal static class CopyToRtPatch
     {
         if (_passthrough)
             return true;
+        if (DlssRuntime.ShouldYieldPresentPath)
+            return true;
         if (!DlssRuntime.IsLive || destination == null || source == null)
             return true;
         if (!ReferenceEquals(destination, MyRender11.Backbuffer))
@@ -45,6 +47,8 @@ internal static class CopyToRtPatch
     private static void Postfix(IRtvBindable destination)
     {
         if (_passthrough)
+            return;
+        if (DlssRuntime.ShouldYieldPresentPath)
             return;
         if (!DlssRuntime.IsLive || destination == null)
             return;

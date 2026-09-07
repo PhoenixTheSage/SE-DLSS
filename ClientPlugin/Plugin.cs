@@ -50,6 +50,8 @@ public sealed class Plugin : IPlugin
         harmony.PatchAll(Assembly.GetExecutingAssembly());
         deviceHarmony = new Harmony(DeviceDisposePatch.HarmonyId);
         DeviceDisposePatch.Apply(deviceHarmony);
+        AnomalyHook.Probe();
+        AnomalyHook.ClaimUpscale();
         MyLog.Default.WriteLine("DLSS plugin initialized. GPU: " + GpuSupport.StatusLine);
         DebugLog.Write("Harmony patched, plugin initialized GPU=" + GpuSupport.StatusLine);
     }

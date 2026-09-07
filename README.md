@@ -25,7 +25,7 @@ Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framewor
 
 - **Velocity** — `VelocityRegistry.Active` (object motion). Camera-from-depth remains the fallback.
 - **Reactive mask** — catalog `reactiveMask`, bound as DLSS bias-current-color when a pack marks pixels that must not use history.
-- **AfterUpscale** — `OwnedPassRegistry.NotifyUpscaleComplete()` after a successful LDR evaluate so packs run at output resolution.
+- **AfterUpscale** — `ClaimUpscale("se-dlss")` at init; `NotifyUpscaleComplete(rc, dest)` after evaluate. When `HasDisplayTenant`, dest is pre-tonemap HDR.
 - **History** — `FrameTemporal.InvalidateHistory()` on camera cuts this plugin owns.
 
 No compile-time Anomaly reference. NVIDIA RTX is required for DLSS; Anomaly itself does not need it.
@@ -55,11 +55,11 @@ These plugins patch the same render-thread surfaces. Prefer not enabling them to
 
 ### HdrRender
 
-Overlap: `MyToneMapping.Run`, `MyCopyToRT.Run`, and emissive billboards. HdrRender replaces Keen's SDR tone-map with an HDR path; this plugin evaluates DLSS on the LDR tone-map result and then blits to the backbuffer.
+Overlap: `MyToneMapping.Run`, `MyCopyToRT.Run`, and emissive billboards. HdrRender replaces Keen's SDR tone-map with an HDR path and owns the scRGB swapchain.
 
-- **Safe now:** use one or the other.
-- **Later — AfterUpscale / HDR-evaluate hook:** HdrRender (or this plugin) exposes a pre-tone-map / post-upscale color buffer. DLSS evaluates into that buffer, then HdrRender's HDR tone-map runs at output resolution. Same pattern as Anomaly `NotifyUpscaleComplete()`.
-- **Later — detect and yield:** if HdrRender types are loaded, skip `ToneMappingPatch`, `CopyToRtPatch`, and `BillboardLdrPatch` and leave DLSS off with a status warning.
+When Anomaly is loaded this plugin `ClaimUpscale("se-dlss")` at init. If `HasDisplayTenant` (HdrRender-class BT.2390 registered AfterUpscale with `TemporalPolicy.Display`), DLSS skips Keen SDR and does not evaluate HdrRender's scRGB `MyToneMapping.Run` result. It evaluates catalog `hdrColor` (LBuffer) into an output-sized HDR dest and calls `NotifyUpscaleComplete(rc, dest)` so AfterUpscale reads `upscaledColor`. `CopyToRT` and LDR billboards yield when that Display tenant is present or the backbuffer is already `R16G16B16A16`.
+
+Without a Display tenant, keep using one or the other. A HdrRender fork still has to `Register("hdr.tonemap", "AfterUpscale", …, Display)` and yield its tonemap prefix when `HasUpscaleConsumer`.
 
 ### SMAA
 

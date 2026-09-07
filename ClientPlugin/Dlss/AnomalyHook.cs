@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using System.Text;
+using VRage.Render11.Resources;
 using VRage.Utils;
 
 namespace ClientPlugin.Dlss;
@@ -18,6 +19,8 @@ internal static class AnomalyHook
     public const string FrameTemporalTypeName = "ClientPlugin.Shaders.FrameTemporal";
     public const string ReactiveMaskName = "reactiveMask";
     public const string VelocityName = "velocity";
+    public const string HdrColorName = "hdrColor";
+    public const string UpscaleId = "se-dlss";
 
     // Matches Anomaly's VelocityConvention flags.
     public const int ConventionUnjittered = 1;
@@ -32,10 +35,15 @@ internal static class AnomalyHook
 
     private static readonly object Gate = new();
     private static readonly object[] ReactiveNameArgs = { ReactiveMaskName };
+    private static readonly object[] HdrColorNameArgs = { HdrColorName };
 
     private static PropertyInfo _activeProperty;
     private static MethodInfo _catalogActive;
     private static MethodInfo _notifyUpscale;
+    private static MethodInfo _notifyUpscale2;
+    private static MethodInfo _claimUpscale;
+    private static MethodInfo _releaseUpscale;
+    private static PropertyInfo _hasDisplayTenant;
     private static MethodInfo _invalidateHistory;
     private static FieldInfo _anomalyConfigCurrent;
     private static PropertyInfo _velocitySource;
@@ -47,6 +55,8 @@ internal static class AnomalyHook
     private static PropertyInfo _height;
     private static PropertyInfo _convention;
     private static PropertyInfo _historyValid;
+    private static PropertyInfo _srv;
+    private static bool _claimedUpscale;
     private static bool _loadHooked;
     private static bool _loggedFound;
     private static bool _loggedMissing;
@@ -82,7 +92,42 @@ internal static class AnomalyHook
         get
         {
             lock (Gate)
-                return _notifyUpscale != null;
+                return _notifyUpscale2 != null || _notifyUpscale != null;
+        }
+    }
+
+    public static bool ClaimedUpscale
+    {
+        get
+        {
+            lock (Gate)
+                return _claimedUpscale;
+        }
+    }
+
+    /// <summary>
+    /// Anomaly AfterUpscale tenant set <c>TemporalPolicy.Display</c>.
+    /// Evaluate pre-tonemap <c>hdrColor</c>; do not use HdrRender's scRGB
+    /// <c>MyToneMapping.Run</c> result.
+    /// </summary>
+    public static bool HasDisplayTenant
+    {
+        get
+        {
+            Probe();
+            PropertyInfo prop;
+            lock (Gate)
+                prop = _hasDisplayTenant;
+            if (prop == null)
+                return false;
+            try
+            {
+                return prop.GetValue(null) is true;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 
@@ -91,9 +136,11 @@ internal static class AnomalyHook
         lock (Gate)
         {
             EnsureLoadHook();
-            if (_activeProperty == null || _catalogActive == null || _notifyUpscale == null ||
+            if (_activeProperty == null || _catalogActive == null ||
+                (_notifyUpscale == null && _notifyUpscale2 == null) ||
                 _invalidateHistory == null || _velocitySource == null)
                 ScanAssembliesUnlocked();
+            TryClaimUpscaleUnlocked();
         }
     }
 
@@ -124,10 +171,15 @@ internal static class AnomalyHook
                 _loadHooked = false;
             }
 
+            TryReleaseUpscaleUnlocked();
             ClearAccessors();
             _activeProperty = null;
             _catalogActive = null;
             _notifyUpscale = null;
+            _notifyUpscale2 = null;
+            _claimUpscale = null;
+            _releaseUpscale = null;
+            _hasDisplayTenant = null;
             _invalidateHistory = null;
             _anomalyConfigCurrent = null;
             _velocitySource = null;
@@ -138,6 +190,18 @@ internal static class AnomalyHook
             _loggedFound = _loggedMissing = _loggedUnavailable = false;
             _loggedConvention = _loggedSize = _loggedReactiveSize = false;
             _loggedNotify = _notifiedThisFrame = _notifiedLastEvaluate = _usedReactiveThisFrame = false;
+            _claimedUpscale = false;
+        }
+    }
+
+    public static void ClaimUpscale()
+    {
+        lock (Gate)
+        {
+            EnsureLoadHook();
+            if (_claimUpscale == null)
+                ScanAssembliesUnlocked();
+            TryClaimUpscaleUnlocked();
         }
     }
 
@@ -210,28 +274,60 @@ internal static class AnomalyHook
         return true;
     }
 
+    public static bool TryGetHdrColor(int expectedWidth, int expectedHeight, out ISrvBindable srv)
+    {
+        srv = null;
+        if (!TryReadCatalog(HdrColorNameArgs, out var available, out _, out var width, out var height, out var srvObj))
+            return false;
+        if (!available || srvObj is not ISrvBindable color)
+            return false;
+        if (expectedWidth > 0 && expectedHeight > 0 &&
+            (width != expectedWidth || height != expectedHeight))
+        {
+            DebugLog.Write("Anomaly hdrColor size mismatch " + width + "x" + height +
+                           " vs " + expectedWidth + "x" + expectedHeight);
+            return false;
+        }
+
+        srv = color;
+        return true;
+    }
+
     public static void NotifyUpscaleComplete()
     {
+        NotifyUpscaleComplete(null, null);
+    }
+
+    public static void NotifyUpscaleComplete(object renderContext, object color)
+    {
+        MethodInfo notify2;
         MethodInfo notify;
         lock (Gate)
         {
             if (_notifiedThisFrame)
                 return;
+            notify2 = _notifyUpscale2;
             notify = _notifyUpscale;
         }
 
-        if (notify == null)
+        if (notify2 == null && notify == null)
         {
             Probe();
             lock (Gate)
+            {
+                notify2 = _notifyUpscale2;
                 notify = _notifyUpscale;
-            if (notify == null)
+            }
+            if (notify2 == null && notify == null)
                 return;
         }
 
         try
         {
-            notify.Invoke(null, notify.GetParameters().Length == 0 ? null : new object[] { null });
+            if (notify2 != null)
+                notify2.Invoke(null, new[] { renderContext, color });
+            else
+                notify.Invoke(null, notify.GetParameters().Length == 0 ? null : new[] { color ?? renderContext });
             lock (Gate)
             {
                 _notifiedThisFrame = true;
@@ -241,7 +337,7 @@ internal static class AnomalyHook
                 _loggedNotify = true;
             }
 
-            DebugLog.Write("Anomaly NotifyUpscaleComplete");
+            DebugLog.Write("Anomaly NotifyUpscaleComplete dest=" + (color != null ? "yes" : "none"));
         }
         catch (Exception e)
         {
@@ -340,6 +436,8 @@ internal static class AnomalyHook
             sb.AppendLine(_notifiedLastEvaluate
                 ? "AfterUpscale: notified"
                 : "AfterUpscale: waiting for evaluate");
+        sb.Append("Upscale claim: ").AppendLine(_claimedUpscale ? UpscaleId : "none");
+        sb.Append("Display tenant: ").AppendLine(HasDisplayTenant ? "yes" : "no");
     }
 
     private static bool TryReadVelocity(
@@ -390,10 +488,17 @@ internal static class AnomalyHook
     private static bool TryReadCatalog(object[] nameArgs, out bool available, out IntPtr native, out int width,
         out int height)
     {
+        return TryReadCatalog(nameArgs, out available, out native, out width, out height, out _);
+    }
+
+    private static bool TryReadCatalog(object[] nameArgs, out bool available, out IntPtr native, out int width,
+        out int height, out object srv)
+    {
         available = false;
         native = IntPtr.Zero;
         width = 0;
         height = 0;
+        srv = null;
 
         Probe();
         MethodInfo active;
@@ -408,7 +513,7 @@ internal static class AnomalyHook
             if (buffer == null)
                 return false;
             return TryReadBuffer(buffer, requireVelocityFields: false, out available, out native, out width,
-                out height, out _, out _);
+                out height, out _, out _, out srv);
         }
         catch (Exception e)
         {
@@ -433,12 +538,28 @@ internal static class AnomalyHook
         out int convention,
         out bool historyValid)
     {
+        return TryReadBuffer(buffer, requireVelocityFields, out available, out native, out width, out height,
+            out convention, out historyValid, out _);
+    }
+
+    private static bool TryReadBuffer(
+        object buffer,
+        bool requireVelocityFields,
+        out bool available,
+        out IntPtr native,
+        out int width,
+        out int height,
+        out int convention,
+        out bool historyValid,
+        out object srv)
+    {
         available = false;
         native = IntPtr.Zero;
         width = 0;
         height = 0;
         convention = 0;
         historyValid = false;
+        srv = null;
 
         lock (Gate)
         {
@@ -450,6 +571,7 @@ internal static class AnomalyHook
             height = ReadInt(_height, buffer);
             convention = ReadInt(_convention, buffer);
             historyValid = ReadBool(_historyValid, buffer);
+            srv = _srv?.GetValue(buffer);
         }
 
         return true;
@@ -486,7 +608,8 @@ internal static class AnomalyHook
         foreach (var assembly in assemblies)
         {
             TryBindUnlocked(assembly);
-            if (_activeProperty != null && _catalogActive != null && _notifyUpscale != null &&
+            if (_activeProperty != null && _catalogActive != null &&
+                (_notifyUpscale != null || _notifyUpscale2 != null) &&
                 _invalidateHistory != null && _velocitySource != null)
                 return;
         }
@@ -518,12 +641,18 @@ internal static class AnomalyHook
                 bound |= _catalogActive != null;
             }
 
-            if (_notifyUpscale == null)
+            if (_notifyUpscale == null && _notifyUpscale2 == null)
             {
                 var owned = assembly.GetType(OwnedPassTypeName, throwOnError: false, ignoreCase: false);
-                _notifyUpscale = FindStatic(owned, "NotifyUpscaleComplete") ??
-                                 FindStatic(owned, "NotifyUpscaleComplete", typeof(object));
-                bound |= _notifyUpscale != null;
+                _notifyUpscale2 = FindStatic(owned, "NotifyUpscaleComplete", typeof(object), typeof(object));
+                _notifyUpscale = FindStatic(owned, "NotifyUpscaleComplete", typeof(object)) ??
+                                 FindStatic(owned, "NotifyUpscaleComplete");
+                _claimUpscale = FindStatic(owned, "ClaimUpscale", typeof(string));
+                _releaseUpscale = FindStatic(owned, "ReleaseUpscale", typeof(string));
+                _hasDisplayTenant = owned?.GetProperty("HasDisplayTenant",
+                    BindingFlags.Public | BindingFlags.Static);
+                bound |= _notifyUpscale2 != null || _notifyUpscale != null;
+                TryClaimUpscaleUnlocked();
             }
 
             if (_invalidateHistory == null)
@@ -604,9 +733,51 @@ internal static class AnomalyHook
         DebugLog.Write("Anomaly types from " + assembly.FullName +
                        " velocity=" + (_activeProperty != null) +
                        " catalog=" + (_catalogActive != null) +
-                       " afterUpscale=" + (_notifyUpscale != null) +
+                       " afterUpscale=" + (_notifyUpscale2 != null || _notifyUpscale != null) +
+                       " claim=" + (_claimUpscale != null) +
+                       " display=" + (_hasDisplayTenant != null) +
                        " temporal=" + (_invalidateHistory != null) +
                        " source=" + (_velocitySource != null));
+    }
+
+    private static void TryClaimUpscaleUnlocked()
+    {
+        if (_claimedUpscale || _claimUpscale == null)
+            return;
+        try
+        {
+            var ok = _claimUpscale.Invoke(null, new object[] { UpscaleId });
+            _claimedUpscale = ok is not false;
+            if (_claimedUpscale)
+            {
+                MyLog.Default.WriteLine("DLSS: claimed Anomaly upscale slot '" + UpscaleId + "'");
+                DebugLog.Write("ClaimUpscale " + UpscaleId);
+            }
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ClaimUpscale: " + e.GetType().Name + ": " + e.Message);
+        }
+    }
+
+    private static void TryReleaseUpscaleUnlocked()
+    {
+        if (!_claimedUpscale || _releaseUpscale == null)
+        {
+            _claimedUpscale = false;
+            return;
+        }
+
+        try
+        {
+            _releaseUpscale.Invoke(null, new object[] { UpscaleId });
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ReleaseUpscale: " + e.GetType().Name + ": " + e.Message);
+        }
+
+        _claimedUpscale = false;
     }
 
     private static bool EnsureAccessorsUnlocked(Type bufferType, bool requireVelocityFields)
@@ -630,6 +801,7 @@ internal static class AnomalyHook
         _height = bufferType.GetProperty("Height", flags);
         _convention = bufferType.GetProperty("Convention", flags);
         _historyValid = bufferType.GetProperty("HistoryValid", flags);
+        _srv = bufferType.GetProperty("Srv", flags);
         if (_isAvailable == null || _nativeResource == null || _width == null || _height == null)
             return false;
         return !requireVelocityFields || (_convention != null && _historyValid != null);
@@ -638,7 +810,7 @@ internal static class AnomalyHook
     private static void ClearAccessors()
     {
         _bufferType = null;
-        _isAvailable = _nativeResource = _width = _height = _convention = _historyValid = null;
+        _isAvailable = _nativeResource = _width = _height = _convention = _historyValid = _srv = null;
     }
 
     private static bool ReadBool(PropertyInfo prop, object instance)

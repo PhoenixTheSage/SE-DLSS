@@ -1,5 +1,6 @@
 using System;
 using SharpDX.Direct3D11;
+using SharpDX.DXGI;
 using VRage.Render11.Common;
 using VRage.Render11.Resources;
 using VRage.Utils;
@@ -29,11 +30,14 @@ public static class DlssRuntime
     public static bool UsedExternalVelocity { get; private set; }
     public static bool UsedReactiveMask { get; private set; }
     public static bool EvaluatedThisFrame { get; set; }
+    public static bool LastEvaluateWasHdr { get; private set; }
     public static int EvaluateCount { get; private set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
     private static bool _outputDepthReady;
     private static ICustomTexture _ldrTexture;
     private static PersistentLdrTarget _ldrOutput;
+    private static ICustomTexture _hdrTexture;
+    private static PersistentLdrTarget _hdrOutput;
 
     private static bool _configChanged = true;
     private static bool _resetHistory = true;
@@ -65,12 +69,41 @@ public static class DlssRuntime
 
     public static bool IsLive => WantsDlss && NgxHost.IsReady && !MyRender11.MultisamplingEnabled;
 
+    /// <summary>
+    /// HdrRender (or another Display tenant) owns present. Do not intercept
+    /// <c>CopyToRT</c> or LDR billboards onto the scRGB swapchain.
+    /// </summary>
+    public static bool ShouldYieldPresentPath =>
+        AnomalyHook.HasDisplayTenant || IsHdrSwapchainLive;
+
+    public static bool IsHdrSwapchainLive
+    {
+        get
+        {
+            var backbuffer = MyRender11.Backbuffer;
+            if (backbuffer?.Resource == null)
+                return false;
+            try
+            {
+                using var tex = backbuffer.Resource.QueryInterface<Texture2D>();
+                var format = tex.Description.Format;
+                return format == Format.R16G16B16A16_Float ||
+                       format == Format.R16G16B16A16_UNorm;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
     public static void NotifyPluginsReady()
     {
         if (_pluginsReady)
             return;
         _pluginsReady = true;
         AnomalyHook.Probe();
+        AnomalyHook.ClaimUpscale();
         DebugLog.Write("plugins ready; NGX init allowed");
     }
 
@@ -111,6 +144,14 @@ public static class DlssRuntime
         {
             DebugLog.Write("ReleaseLdrOutput during shutdown: " + e);
         }
+        try
+        {
+            ReleaseHdrOutput();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ReleaseHdrOutput during shutdown: " + e);
+        }
         InternalWidth = InternalHeight = OutputWidth = OutputHeight = 0;
         _cachedOutput = default(Vector2I);
         _configChanged = true;
@@ -119,6 +160,7 @@ public static class DlssRuntime
         UsedExternalVelocity = false;
         UsedReactiveMask = false;
         EvaluatedThisFrame = false;
+        LastEvaluateWasHdr = false;
         EvaluateCount = 0;
         LastBindingEvidence = BindingContext = _lastVelocitySource = null;
         _evaluateAttempt = _renderFrame = 0;
@@ -252,6 +294,7 @@ public static class DlssRuntime
         UsedReactiveMask = false;
         _renderFrame++;
         AnomalyHook.BeginFrame();
+        LastEvaluateWasHdr = false;
     }
 
     public static void ReleaseOutputDepth()
@@ -283,6 +326,75 @@ public static class DlssRuntime
         _ldrOutput = null;
         if (_ldrTexture != null)
             MyManagers.CustomTextures.DisposeTex(ref _ldrTexture);
+    }
+
+    public static IBorrowedCustomTexture AcquireHdrOutput()
+    {
+        var output = OutputResolution();
+        if (output.X <= 0 || output.Y <= 0)
+            return null;
+        if (_hdrOutput != null && _hdrOutput.Size.X == output.X && _hdrOutput.Size.Y == output.Y)
+            return _hdrOutput;
+
+        ReleaseHdrOutput();
+        _hdrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.HdrUpscale", output.X, output.Y);
+        if (_hdrTexture == null)
+            return null;
+        _hdrOutput = new PersistentLdrTarget(_hdrTexture);
+        DebugLog.Write("HDR output " + output.X + "x" + output.Y + " fmt=" + _hdrOutput.Format);
+        return _hdrOutput;
+    }
+
+    public static void ReleaseHdrOutput()
+    {
+        _hdrOutput = null;
+        if (_hdrTexture != null)
+            MyManagers.CustomTextures.DisposeTex(ref _hdrTexture);
+    }
+
+    /// <summary>
+    /// Pre-tonemap <c>hdrColor</c> → output-sized dest, then
+    /// <c>NotifyUpscaleComplete(rc, dest)</c>. Skips HdrRender's scRGB
+    /// <c>MyToneMapping.Run</c> result.
+    /// </summary>
+    public static bool TryEvaluateHdrDisplay()
+    {
+        if (!IsLive || EvaluatedThisFrame)
+            return false;
+
+        ISrvBindable source = null;
+        if (!AnomalyHook.TryGetHdrColor(InternalWidth, InternalHeight, out source))
+            source = MyGBuffer.Main?.LBuffer;
+        if (source == null)
+        {
+            DebugLog.Write("HDR evaluate missing hdrColor/LBuffer");
+            return false;
+        }
+
+        var dest = AcquireHdrOutput();
+        if (dest == null)
+            return false;
+
+        if (!TryEvaluate(dest, source))
+        {
+            DebugLog.Write("ToneMapping HDR evaluate failed src=" + source.Size + " dest=" + dest.Size);
+            return false;
+        }
+
+        EvaluatedThisFrame = true;
+        LastEvaluateWasHdr = true;
+        ApplyOutputSpace();
+        try
+        {
+            AnomalyHook.NotifyUpscaleComplete(MyRender11.RC, dest);
+        }
+        finally
+        {
+            MyRender11.RC?.ClearState();
+        }
+
+        DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + source.Size + " dest=" + dest.Size);
+        return true;
     }
 
     public static IBorrowedDepthStencilTexture TryAcquireOutputDepth(IDepthStencil source, Vector2I size)

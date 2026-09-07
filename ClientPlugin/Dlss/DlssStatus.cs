@@ -33,11 +33,13 @@ public static class DlssStatus
                 .Append(" x ")
                 .Append(DlssRuntime.OutputHeight)
                 .AppendLine();
-            sb.Append("LDR evaluate: ");
+            sb.Append("Evaluate: ");
             if (DlssRuntime.EvaluateCount <= 0)
                 sb.AppendLine("no");
             else
-                sb.Append("yes (").Append(DlssRuntime.EvaluateCount).AppendLine(" this session)");
+                sb.Append(DlssRuntime.LastEvaluateWasHdr ? "HDR" : "LDR")
+                    .Append(" (").Append(DlssRuntime.EvaluateCount).AppendLine(" this session)");
+            sb.Append("HDR swapchain: ").AppendLine(DlssRuntime.IsHdrSwapchainLive ? "yes" : "no");
             sb.Append("Jitter: ")
                 .Append(Jitter.OffsetX.ToString("0.###"))
                 .Append(',')
