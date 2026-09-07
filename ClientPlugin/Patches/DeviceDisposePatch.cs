@@ -11,8 +11,8 @@ namespace ClientPlugin.Patches;
 /// <summary>
 /// NGX must be shut down while the D3D11 device is still alive. Keen disposes
 /// the device on the render thread; <see cref="Plugin.Dispose"/> is too late.
-/// Patched with a separate Harmony id so <c>UnpatchAll</c> on plugin dispose
-/// does not remove this hook before the device is released.
+/// Patched with a separate Harmony id and never removed: Pulsar only disposes
+/// plugins at process exit.
 /// </summary>
 internal static class DeviceDisposePatch
 {

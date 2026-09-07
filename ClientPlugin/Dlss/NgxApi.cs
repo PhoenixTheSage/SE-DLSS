@@ -32,7 +32,7 @@ internal static class NgxApi
     private const int PresetJ = 10;
     private const int PresetK = 11;
     private const int PresetM = 13;
-    private const ulong SteamAppId = 0x244850;
+    private const ulong SteamAppId = 244850;
 
     private static readonly object Gate = new();
 

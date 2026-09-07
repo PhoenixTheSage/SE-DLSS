@@ -1,13 +1,13 @@
 # Space Engineers DLSS
 
-Pulsar client plugin that adds **NVIDIA DLSS 4.5 Super Resolution** and **DLAA** to Space Engineers 1 (DX11). Frame Generation is not supported.
+Pulsar client plugin that adds **NVIDIA DLSS Super Resolution** and **DLAA** to Space Engineers 1 (DX11). Frame Generation is not supported.
 
 Architecture supports [Rich HUD Framework](https://github.com/DarkHelmet/RichHudFramework)
 
 ## Requirements
 
-- Space Engineers with [Pulsar](https://github.com/SpaceGT/Pulsar), Windows, NVIDIA RTX, current Game Ready driver
-- PluginHub and `Assets/` already include NVIDIA's `nvngx_dlss.dll` (SDK 310.5+). For a local build, put it next to the plugin DLL in Pulsar's `Local` folder.
+- Space Engineers with [Pulsar](https://github.com/SpaceGT/Pulsar) 2.4.0 or later, Windows, NVIDIA RTX, current Game Ready driver
+- Pulsar downloads NVIDIA's `nvngx_dlss.dll` (SDK 310.7.0) from this repo's GitHub release and places it next to the plugin DLL. For a local build, put the same file in `Assets/` (gitignored) or next to the plugin DLL in Pulsar's `Local` folder.
 
 ## Settings
 
@@ -28,7 +28,13 @@ Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framewor
 - **AfterUpscale** — `OwnedPassRegistry.NotifyUpscaleComplete()` after a successful LDR evaluate so packs run at output resolution.
 - **History** — `FrameTemporal.InvalidateHistory()` on camera cuts this plugin owns.
 
-No PluginHub dependency is declared. NVIDIA RTX is required for DLSS; Anomaly itself does not need it.
+No compile-time Anomaly reference. NVIDIA RTX is required for DLSS; Anomaly itself does not need it.
+
+## Driver / NGX
+
+This plugin does not use NVIDIA's public NGX SDK shim. It loads the driver's private `_nvngx.dll` from System32, the `NGXCore` registry path, or DriverStore `nv*` folders, and calls private exports through an OleAut32 `DispCallFunc` trampoline so the driver sees a native return address.
+
+The code fails closed on NGX error codes and defaults to off. A native access violation during init cannot be caught from .NET Framework and will take the game down.
 
 ## Building
 
@@ -39,13 +45,39 @@ Debug with Pulsar `Legacy.exe` / `Interim.exe` and `-sources`.
 
 ## NVIDIA license
 
-`nvngx_dlss.dll` is NVIDIA redistributable software and ships in `Assets/`. Do not vendor NVIDIA SDK headers. https://developer.nvidia.com/sw-notification
+`nvngx_dlss.dll` is NVIDIA redistributable software. The NVIDIA RTX SDKs license is in [`Assets/NVIDIA-LICENSE.txt`](Assets/NVIDIA-LICENSE.txt). Do not vendor NVIDIA SDK headers. https://developer.nvidia.com/sw-notification
+
+The binary is served from the [`nvngx-dlss-310.7.0`](https://github.com/PhoenixTheSage/SE-DLSS/releases/tag/nvngx-dlss-310.7.0) release (SHA-256 `be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e`), not from git.
 
 ## Known interactions
 
-[SmoothFrames](https://github.com/WhiteFang34/SmoothFrames) also patches the render thread. Jitter plus camera interpolation can interact.
+These plugins patch the same render-thread surfaces. Prefer not enabling them together until a handshake exists.
 
-[Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is optional. It is discovered at runtime by type name (`VelocityRegistry`, `BufferCatalog`, `OwnedPassRegistry`, `FrameTemporal`); this repo does not reference Anomaly at compile time. Packs that Harmony-patch `MyShader` or leave extra RT/SRV bound will fight Anomaly and can break Rich HUD.
+### HdrRender
+
+Overlap: `MyToneMapping.Run`, `MyCopyToRT.Run`, and emissive billboards. HdrRender replaces Keen's SDR tone-map with an HDR path; this plugin evaluates DLSS on the LDR tone-map result and then blits to the backbuffer.
+
+- **Safe now:** use one or the other.
+- **Later — AfterUpscale / HDR-evaluate hook:** HdrRender (or this plugin) exposes a pre-tone-map / post-upscale color buffer. DLSS evaluates into that buffer, then HdrRender's HDR tone-map runs at output resolution. Same pattern as Anomaly `NotifyUpscaleComplete()`.
+- **Later — detect and yield:** if HdrRender types are loaded, skip `ToneMappingPatch`, `CopyToRtPatch`, and `BillboardLdrPatch` and leave DLSS off with a status warning.
+
+### SMAA
+
+Overlap: anti-aliasing ownership. SMAA adds its own AA option; this plugin already shares the game's AA dropdown (Off / FXAA / DLSS).
+
+- **Safe now:** pick DLSS or SMAA as the AA, not both.
+- **Later — SMAA after DLSS:** run SMAA at output resolution on the DLSS LDR target (AfterUpscale). SMAA would need a public evaluate entry or an Anomaly-style owned pass.
+- **Later — detect and yield:** if SMAA is loaded and selected, keep `WantsDlss` false.
+
+### SmoothFrames
+
+Overlap: render-thread camera interpolation plus this plugin's jitter on `DrawGameScene`. Interpolated camera vs jittered projection fights temporal history.
+
+- **Safe now:** disable SmoothFrames camera interpolation while DLSS is on.
+- **Later — one temporal owner:** if SmoothFrames is interpolating, skip jitter; or if DLSS is live, skip SmoothFrames interpolation.
+- **Later — detect and yield:** skip `DrawGameSceneJitterPatch` when SmoothFrames types are present.
+
+[Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is optional and complementary. It is discovered at runtime by type name (`VelocityRegistry`, `BufferCatalog`, `OwnedPassRegistry`, `FrameTemporal`). Packs that Harmony-patch `MyShader` or leave extra RT/SRV bound will fight Anomaly and can break Rich HUD.
 
 ## Bug reports
 

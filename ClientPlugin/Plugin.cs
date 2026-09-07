@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using ClientPlugin.Dlss;
@@ -39,11 +38,18 @@ public sealed class Plugin : IPlugin
         NgxHost.AddSearchPath(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
         DebugLog.Write("Init search=" + NgxHost.SearchPathSummary());
 
+        GpuSupport.TryProbe();
+        if (GpuSupport.Probed && !GpuSupport.IsNvidia)
+        {
+            MyLog.Default.WriteLine("DLSS plugin initialized without Harmony patches. GPU: " + GpuSupport.StatusLine);
+            DebugLog.Write("Harmony skipped, non-NVIDIA GPU=" + GpuSupport.StatusLine);
+            return;
+        }
+
         harmony = new Harmony(Name);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
         deviceHarmony = new Harmony(DeviceDisposePatch.HarmonyId);
         DeviceDisposePatch.Apply(deviceHarmony);
-        GpuSupport.TryProbe();
         MyLog.Default.WriteLine("DLSS plugin initialized. GPU: " + GpuSupport.StatusLine);
         DebugLog.Write("Harmony patched, plugin initialized GPU=" + GpuSupport.StatusLine);
     }
@@ -57,17 +63,11 @@ public sealed class Plugin : IPlugin
         DebugLog.Write("Dispose");
         GameAntiAliasing.Reset();
         BillboardOutputPass.Reset();
-        try
-        {
-            harmony?.UnpatchAll(Name);
-        }
-        catch (Exception e)
-        {
-            MyLog.Default.Error("DLSS failed to remove Harmony patches: " + e);
-        }
         harmony = null;
-        // Leave deviceHarmony applied so NGX can shut down when the D3D device
-        // is disposed after this plugin. Process exit reclaims the patch.
+        // Leave Harmony patches in place. Pulsar only disposes plugins at
+        // process exit; UnpatchAll rewrites shared trampolines while other
+        // plugins may still be running. DeviceDisposePatch stays applied so
+        // NGX can shut down when the D3D device is released.
         DlssRuntime.Shutdown();
         GpuSupport.Reset();
         settingsGenerator = null;

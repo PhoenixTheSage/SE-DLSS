@@ -1,30 +1,35 @@
-﻿<?xml version="1.0"?>
+<?xml version="1.0"?>
 <PluginData xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="GitHubPlugin">
 
     <Id>B6469FEE-83BF-44A9-93F9-B4A252527C35</Id>
     <RepoId>PhoenixTheSage/SE-DLSS</RepoId>
-    <FriendlyName>Zeridian's DLSS 4.5</FriendlyName>
+    <FriendlyName>NVIDIA DLSS</FriendlyName>
     <Author>PhoenixTheSage</Author>
-    <Tooltip>Enables DLSS 4.5 in Space Engineers</Tooltip>
+    <Tooltip>Enables NVIDIA DLSS Super Resolution and DLAA in Space Engineers</Tooltip>
     <Description>
-Adds NVIDIA DLSS &amp; DLAA 4.5 to Space Engineers. Requires NVIDA DLSS-capable GPU. Has built-in support for Rich HUD Framework.
+Adds NVIDIA DLSS Super Resolution and DLAA. Windows, NVIDIA RTX required. Defaults off.
+
+Loads the NVIDIA driver's private _nvngx.dll (System32, NGXCore, or DriverStore) through an OleAut32 trampoline. A native access violation during init cannot be caught from .NET Framework and will close the game. Other failures fail closed.
+
+Do not enable with HdrRender, SMAA, or SmoothFrames (tone-map, copy-to-RT, billboard, and camera-jitter overlap). Safer paths: HdrRender - use one or the other until an AfterUpscale/HDR-evaluate hook exists; SMAA - use DLSS or SMAA as the AA, not both; SmoothFrames - disable camera interpolation while DLSS is on.
+
+Optional Anomaly Shader Framework supplies object motion. Rich HUD is supported.
     </Description>
 
     <SourceDirectories>
         <Directory>ClientPlugin</Directory>
-        <Directory>Assets</Directory>
     </SourceDirectories>
 
-    <!-- NVIDIA DLSS redistributable. Placement=Bin copies it next to plugin.dll.
-         Path is in-repo; -->
-    <!-- <Asset Name="NvngxDlss"
-           Path="Assets/nvngx_dlss.dll"
-           Placement="Bin" /> -->
-    <AssetFolder>Assets</AssetFolder>
+    <Asset Name="NvngxDlss"
+           Url="https://github.com/PhoenixTheSage/SE-DLSS/releases/download/nvngx-dlss-310.7.0/nvngx_dlss.dll"
+           Sha256="be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e"
+           Placement="Bin" />
 
-    <!-- Anomaly is optional and discovered at runtime (velocity, catalog,
-         AfterUpscale notify). Do not add DependencyIds until Anomaly is on
-         PluginHub; camera motion vectors remain the fallback. -->
+    <!-- Anomaly is optional and discovered at runtime. Camera motion vectors
+         remain the fallback when it is not enabled. -->
+    <SoftDependencyIds>
+        <Id>A9C29274-E447-49EE-881B-C980E6D190FD</Id>
+    </SoftDependencyIds>
 
     <Platforms>Windows</Platforms>
 
