@@ -255,44 +255,108 @@ internal static class DlssD3d
         }
     }
 
-    internal static bool ValidateVelocity(Device device, IntPtr pointer, int width, int height, out string evidence)
+    internal static bool ValidateVelocity(Device device, IntPtr pointer, int width, int height, out string evidence,
+        Resource known = null)
     {
         evidence = "invalid velocity texture";
         if (pointer == IntPtr.Zero || device == null)
             return false;
-        var iid = typeof(Texture2D).GUID;
-        IntPtr queried = IntPtr.Zero;
         try
         {
-#if NETFRAMEWORK
-            if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, ref iid, out queried) != 0)
-#else
-            if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, in iid, out queried) != 0)
-#endif
-                return false;
-            // QueryInterface owns one reference; never dispose the producer's borrowed pointer.
-            using (var texture = new Texture2D(queried))
+            if (TryAcceptLiveVelocity(device, pointer, known, width, height, out evidence, out var accepted))
+                return accepted;
+
+            var iid = typeof(Texture2D).GUID;
+            IntPtr queried = IntPtr.Zero;
+            try
             {
-                queried = IntPtr.Zero;
-                var desc = texture.Description;
-                evidence = Describe(pointer, texture);
-                using (var owner = texture.Device)
-                    return owner.NativePointer == device.NativePointer &&
-                           desc.Width == width && desc.Height == height &&
-                           desc.Format == Format.R16G16_Float && desc.SampleDescription.Count == 1 &&
-                           desc.ArraySize == 1 && (desc.BindFlags & BindFlags.ShaderResource) != 0;
+#if NETFRAMEWORK
+                if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, ref iid, out queried) != 0)
+#else
+                if (System.Runtime.InteropServices.Marshal.QueryInterface(pointer, in iid, out queried) != 0)
+#endif
+                    return false;
+                // QueryInterface owns one reference; never dispose the producer's borrowed pointer.
+                // Do not dispose texture.Device — SharpDX caches it on the wrapper and DeviceChild.Dispose
+                // Releases that same object (InvalidOperationException: COM Object pointer is null).
+                using (var texture = new Texture2D(queried))
+                {
+                    queried = IntPtr.Zero;
+                    return AcceptVelocity(device, pointer, texture, width, height, out evidence);
+                }
+            }
+            finally
+            {
+                if (queried != IntPtr.Zero)
+                    System.Runtime.InteropServices.Marshal.Release(queried);
             }
         }
         catch (Exception e)
         {
-            evidence = "velocity texture unreadable: " + e.GetType().Name;
+            evidence = "velocity texture unreadable: " + e.GetType().Name + ": " + e.Message;
             return false;
+        }
+    }
+
+    private static bool TryAcceptLiveVelocity(Device device, IntPtr pointer, Resource known, int width, int height,
+        out string evidence, out bool accepted)
+    {
+        evidence = "invalid velocity texture";
+        accepted = false;
+        if (known == null || known.IsDisposed)
+            return false;
+        if (known.NativePointer != IntPtr.Zero && known.NativePointer != pointer)
+            return false;
+
+        var live = known as Texture2D;
+        var owns = false;
+        if (live == null || live.IsDisposed)
+        {
+            live = known.QueryInterface<Texture2D>();
+            owns = live != null;
+        }
+
+        if (live == null || live.IsDisposed)
+            return false;
+        try
+        {
+            accepted = AcceptVelocity(device, pointer, live, width, height, out evidence);
+            return true;
         }
         finally
         {
-            if (queried != IntPtr.Zero)
-                System.Runtime.InteropServices.Marshal.Release(queried);
+            if (owns)
+                DisposeView(ref live);
         }
+    }
+
+    private static bool AcceptVelocity(Device device, IntPtr pointer, Texture2D texture, int width, int height,
+        out string evidence)
+    {
+        var desc = texture.Description;
+        evidence = Describe(pointer, texture);
+        // SharpDX DeviceChild caches Device; disposing that wrapper poisons texture.Dispose.
+        var owner = texture.Device;
+        if (owner == null || owner.IsDisposed || owner.NativePointer != device.NativePointer)
+        {
+            evidence += " wrong-device";
+            return false;
+        }
+
+        if (desc.Width != width || desc.Height != height)
+        {
+            evidence += " size-mismatch";
+            return false;
+        }
+
+        if (desc.Format != Format.R16G16_Float || desc.SampleDescription.Count != 1 || desc.ArraySize != 1 ||
+            (desc.BindFlags & BindFlags.ShaderResource) == 0)
+        {
+            evidence += " format-mismatch";
+            return false;
+        }
+
+        return true;
     }
 
     internal static string Describe(Resource resource)

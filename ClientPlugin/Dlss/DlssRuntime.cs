@@ -641,12 +641,14 @@ public static class DlssRuntime
             var allowAnomaly = Config.Current?.UseAnomalyMotionVectors ?? true;
             var externalMv = IntPtr.Zero;
             var externalHistory = false;
+            object externalSrv = null;
             var usedExternal = allowAnomaly && AnomalyHook.TryGetLive(
-                InternalWidth, InternalHeight, out externalMv, out externalHistory);
+                InternalWidth, InternalHeight, out externalMv, out externalHistory, out externalSrv);
             var rejection = allowAnomaly ? AnomalyHook.SelectionReason : "integration disabled";
             var textureEvidence = "";
+            SharpDX.Direct3D11.Resource knownVelocity = (externalSrv as ISrvBindable)?.Resource;
             if (usedExternal && !DlssD3d.ValidateVelocity(device, externalMv, InternalWidth, InternalHeight,
-                    out textureEvidence))
+                    out textureEvidence, knownVelocity))
             {
                 usedExternal = false;
                 rejection = "incompatible texture/device: " + textureEvidence;

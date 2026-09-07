@@ -207,12 +207,19 @@ internal static class AnomalyHook
 
     public static bool TryGetLive(int expectedWidth, int expectedHeight, out IntPtr native, out bool historyValid)
     {
+        return TryGetLive(expectedWidth, expectedHeight, out native, out historyValid, out _);
+    }
+
+    public static bool TryGetLive(int expectedWidth, int expectedHeight, out IntPtr native, out bool historyValid,
+        out object srv)
+    {
         native = IntPtr.Zero;
         historyValid = false;
+        srv = null;
         SelectionReason = "unavailable or unreadable velocity";
         SelectedSource = null;
         if (!TryReadVelocity(out var available, out var resource, out var width, out var height,
-                out var convention, out historyValid))
+                out var convention, out historyValid, out srv))
             return false;
         if (!available || resource == IntPtr.Zero)
             return false;
@@ -446,7 +453,8 @@ internal static class AnomalyHook
         out int width,
         out int height,
         out int convention,
-        out bool historyValid)
+        out bool historyValid,
+        out object srv)
     {
         available = false;
         native = IntPtr.Zero;
@@ -454,6 +462,7 @@ internal static class AnomalyHook
         height = 0;
         convention = 0;
         historyValid = false;
+        srv = null;
 
         Probe();
         PropertyInfo active;
@@ -466,7 +475,7 @@ internal static class AnomalyHook
                 var buffer = active.GetValue(null);
                 if (buffer != null &&
                     TryReadBuffer(buffer, requireVelocityFields: true, out available, out native, out width,
-                        out height, out convention, out historyValid))
+                        out height, out convention, out historyValid, out srv))
                     return true;
             }
             catch (Exception e)
