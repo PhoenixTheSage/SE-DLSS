@@ -8,7 +8,8 @@ namespace ClientPlugin.Dlss;
 
 /// <summary>
 /// Optional runtime binding to Anomaly Shader Framework. Resolves well-known
-/// types by name — do not add a compile-time project reference.
+/// types by name and silently claims or releases the upscale slot from that
+/// detection — do not add a compile-time project reference.
 /// <see href="https://github.com/PhoenixTheSage/Anomaly/wiki"/>
 /// </summary>
 internal static class AnomalyHook
@@ -140,7 +141,22 @@ internal static class AnomalyHook
                 (_notifyUpscale == null && _notifyUpscale2 == null) ||
                 _invalidateHistory == null || _velocitySource == null)
                 ScanAssembliesUnlocked();
-            TryClaimUpscaleUnlocked();
+            SyncClaimUnlocked();
+        }
+    }
+
+    /// <summary>
+    /// Claim while DLSS is live; release otherwise so a Display tenant can
+    /// <c>CompleteDisplayWithoutUpscale</c> (HDR + FXAA / Off).
+    /// </summary>
+    public static void SyncUpscaleClaim()
+    {
+        lock (Gate)
+        {
+            EnsureLoadHook();
+            if (_claimUpscale == null && _releaseUpscale == null)
+                ScanAssembliesUnlocked();
+            SyncClaimUnlocked();
         }
     }
 
@@ -194,16 +210,7 @@ internal static class AnomalyHook
         }
     }
 
-    public static void ClaimUpscale()
-    {
-        lock (Gate)
-        {
-            EnsureLoadHook();
-            if (_claimUpscale == null)
-                ScanAssembliesUnlocked();
-            TryClaimUpscaleUnlocked();
-        }
-    }
+    public static void ClaimUpscale() => SyncUpscaleClaim();
 
     public static bool TryGetLive(int expectedWidth, int expectedHeight, out IntPtr native, out bool historyValid)
     {
@@ -439,12 +446,17 @@ internal static class AnomalyHook
             return;
         }
 
+        bool notified;
+        bool claimed;
         lock (Gate)
-            sb.AppendLine(_notifiedLastEvaluate
-                ? "AfterUpscale: notified"
-                : "AfterUpscale: waiting for evaluate");
-        sb.Append("Upscale claim: ").AppendLine(_claimedUpscale ? UpscaleId : "none");
-        sb.Append("Display tenant: ").AppendLine(HasDisplayTenant ? "yes" : "no");
+        {
+            notified = _notifiedLastEvaluate;
+            claimed = _claimedUpscale;
+        }
+
+        sb.Append("AfterUpscale: ").Append(notified ? "notified" : "waiting");
+        sb.Append(" · claim ").Append(claimed ? UpscaleId : "none");
+        sb.Append(" · display ").AppendLine(HasDisplayTenant ? "yes" : "no");
     }
 
     private static bool TryReadVelocity(
@@ -661,7 +673,7 @@ internal static class AnomalyHook
                 _hasDisplayTenant = owned?.GetProperty("HasDisplayTenant",
                     BindingFlags.Public | BindingFlags.Static);
                 bound |= _notifyUpscale2 != null || _notifyUpscale != null;
-                TryClaimUpscaleUnlocked();
+                SyncClaimUnlocked();
             }
 
             if (_invalidateHistory == null)
@@ -749,6 +761,21 @@ internal static class AnomalyHook
                        " source=" + (_velocitySource != null));
     }
 
+    private static bool HasAnomalyBindingUnlocked()
+    {
+        return _activeProperty != null || _catalogActive != null ||
+               _notifyUpscale != null || _notifyUpscale2 != null ||
+               _invalidateHistory != null;
+    }
+
+    private static void SyncClaimUnlocked()
+    {
+        if (HasAnomalyBindingUnlocked() && DlssRuntime.IsLive)
+            TryClaimUpscaleUnlocked();
+        else
+            TryReleaseUpscaleUnlocked();
+    }
+
     private static void TryClaimUpscaleUnlocked()
     {
         if (_claimedUpscale || _claimUpscale == null)
@@ -780,6 +807,7 @@ internal static class AnomalyHook
         try
         {
             _releaseUpscale.Invoke(null, new object[] { UpscaleId });
+            DebugLog.Write("ReleaseUpscale " + UpscaleId);
         }
         catch (Exception e)
         {

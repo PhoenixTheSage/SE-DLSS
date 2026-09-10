@@ -9,8 +9,8 @@
     <Description>
 Adds NVIDIA DLSS and DLAA 4.5 in Space Engineers. NVIDIA RTX required.
 
-Optional Anomaly Shader Framework supplies object motion to prevent ghosting. 
-Rich HUD is supported.
+Optional Anomaly Shader Framework supplies object motion to prevent ghosting.
+When Anomaly and Rich HUD Master are loaded, settings also appear under Anomaly Shaders.
 
 Compat: Certain rendering mods may not play nice until they use Anomaly.
     </Description>
@@ -25,5 +25,7 @@ Compat: Certain rendering mods may not play nice until they use Anomaly.
            Placement="Bin" />
 
     <Platforms>Windows</Platforms>
+
+    <!-- Do not list Master or Anomaly here. Anomaly is detected at runtime. -->
 
 </PluginData>

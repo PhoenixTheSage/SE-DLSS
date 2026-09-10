@@ -23,11 +23,14 @@ internal static class NgxApi
     internal const int QualityUltraPerformance = 3;
     internal const int QualityDlaa = 5;
 
+    private const int FlagIsHdr = 1 << 0;
     private const int FlagMvLowRes = 1 << 1;
     private const int FlagDepthInverted = 1 << 3;
     private const int FlagAutoExposure = 1 << 6;
     // Anomaly velocity is unjittered pixel-space at internal res: MVJittered off, MVLowRes on.
-    private const int CreateFlags = FlagDepthInverted | FlagAutoExposure | FlagMvLowRes;
+    // IsHDR is required when Color is pre-tonemap linear HDR (Display tenant).
+    internal static int FeatureFlags(bool hdr) =>
+        FlagDepthInverted | FlagAutoExposure | FlagMvLowRes | (hdr ? FlagIsHdr : 0);
     private const int PresetF = 6;
     private const int PresetJ = 10;
     private const int PresetK = 11;
@@ -178,7 +181,7 @@ internal static class NgxApi
     }
 
     internal static bool SetMode(int quality, uint outWidth, uint outHeight, int preset,
-        out uint renderWidth, out uint renderHeight, out float sharpness)
+        bool hdr, out uint renderWidth, out uint renderHeight, out float sharpness)
     {
         renderWidth = outWidth;
         renderHeight = outHeight;
@@ -219,8 +222,9 @@ internal static class NgxApi
                 return false;
             }
 
+            var flags = FeatureFlags(hdr);
             if (_dlss != IntPtr.Zero && _quality == quality && _preset == preset &&
-                _outW == outWidth && _outH == outHeight && _createFlags == CreateFlags)
+                _outW == outWidth && _outH == outHeight && _createFlags == flags)
             {
                 renderWidth = renderW;
                 renderHeight = renderH;
@@ -234,7 +238,7 @@ internal static class NgxApi
             params_.Set(NgxNames.OutHeight, outHeight);
             params_.Set(NgxNames.PerfQualityValue, quality);
             ApplyHintPresets(params_, preset);
-            params_.Set(NgxNames.CreateFlags, CreateFlags);
+            params_.Set(NgxNames.CreateFlags, flags);
             params_.Set(NgxNames.EnableOutputSubrects, 0);
 
             DeviceContext ctx;
@@ -266,13 +270,14 @@ internal static class NgxApi
 
             _quality = quality;
             _preset = preset;
-            _createFlags = CreateFlags;
+            _createFlags = flags;
             _outW = outWidth;
             _outH = outHeight;
             renderWidth = renderW;
             renderHeight = renderH;
             SetError("DLSS feature created");
             DebugLog.Write("CreateFeature ok quality=" + quality + " preset=" + preset +
+                           " hdr=" + (hdr ? 1 : 0) + " flags=0x" + flags.ToString("X") +
                            " out=" + outWidth + "x" + outHeight + " render=" + renderW + "x" + renderH);
             if (NgxLog.HasMessages)
                 DebugLog.Write("CreateFeature ngx=" + NgxLog.LastLines(4));
@@ -377,7 +382,7 @@ internal static class NgxApi
             " parameter=0x" + motionParameter.ToInt64().ToString("X") +
             " parameterResult=0x" + ((uint)motionGet).ToString("X8") +
             " render=" + renderWidth + "x" + renderHeight + " scale=(1,1) flags=0x" +
-            CreateFlags.ToString("X") + " zeroSubstitute=" + (motionVectors == IntPtr.Zero);
+            _createFlags.ToString("X") + " zeroSubstitute=" + (motionVectors == IntPtr.Zero);
         DlssRuntime.RecordBinding(binding + " submitted");
         var result = evaluate(context.NativePointer, _dlss, parameters.Pointer, IntPtr.Zero);
         DlssRuntime.RecordBinding(binding + " result=0x" + ((uint)result).ToString("X8"));

@@ -27,6 +27,7 @@ internal static class DrawPatch
                     DlssRuntime.RestoreViewportToOutput();
                 }
             }
+            AnomalyHook.SyncUpscaleClaim();
         }
         catch (Exception e)
         {

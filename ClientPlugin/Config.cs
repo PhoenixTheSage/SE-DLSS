@@ -1,13 +1,11 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Xml.Serialization;
 using ClientPlugin.Dlss;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Elements;
 using Sandbox.Graphics.GUI;
-using VRageMath;
 
 namespace ClientPlugin;
 
@@ -19,7 +17,6 @@ public class Config : INotifyPropertyChanged
     private DlssMode mode = DlssMode.Quality;
     private DlssModel model = DlssModel.LatestModel;
     private float sharpness = 0.5f;
-    private bool useAnomalyMotionVectors = true;
 
     #endregion
 
@@ -88,18 +85,6 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref sharpness, value);
     }
 
-    [Separator("Motion vectors")]
-
-    [Checkbox(label: "Use Anomaly Framework",
-        description: "Use Anomaly's object-aware motion vectors when available. " +
-                     "Disable to use camera-from-depth motion vectors. " +
-                     "Reactive mask and AfterUpscale notify stay on when Anomaly is loaded.")]
-    public bool UseAnomalyMotionVectors
-    {
-        get => useAnomalyMotionVectors;
-        set => SetField(ref useAnomalyMotionVectors, value);
-    }
-
     [Separator("Status")]
 
     [Button(label: "Show Status", description: "GPU, NGX support, resolutions, and Anomaly buffer status")]
@@ -107,14 +92,7 @@ public class Config : INotifyPropertyChanged
     public static void ShowStatus()
     {
         GpuSupport.TryProbe();
-        MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-            MyMessageBoxStyleEnum.Info,
-            buttonType: MyMessageBoxButtonsType.OK,
-            messageText: new StringBuilder(DlssStatus.CurrentText),
-            messageCaption: new StringBuilder("DLSS Status"),
-            size: new Vector2(0.7f, 0.65f),
-            moveTextUp: false
-        ));
+        MyGuiSandbox.AddScreen(new StatusScreen(DlssStatus.CurrentText));
     }
 
     #endregion
@@ -131,11 +109,10 @@ public class Config : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         if (propertyName == nameof(AntiAliasing) || propertyName == nameof(Mode) || propertyName == nameof(Model) ||
-            propertyName == nameof(Sharpness) || propertyName == nameof(UseAnomalyMotionVectors))
+            propertyName == nameof(Sharpness))
         {
             DebugLog.Write("config " + propertyName + " aa=" + antiAliasing + " mode=" + mode +
-                           " model=" + model + " sharpness=" + sharpness +
-                           " anomalyMv=" + useAnomalyMotionVectors);
+                           " model=" + model + " sharpness=" + sharpness);
             DlssRuntime.NotifyConfigChanged();
         }
         if (propertyName == nameof(AntiAliasing) && !SuppressApply)

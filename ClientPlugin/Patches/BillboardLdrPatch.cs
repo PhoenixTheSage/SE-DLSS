@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using ClientPlugin.Dlss;
 using HarmonyLib;
-using Sandbox.ModAPI;
+using Sandbox.Game.World;
+using SharpDX.Direct3D11;
 using VRage.Game;
 using VRage.Render11.RenderContext;
 using VRage.Render11.Resources;
@@ -12,6 +14,12 @@ using VRageRender;
 
 namespace ClientPlugin.Patches;
 
+// PostPP Rich HUD is laid out in Master's PixelToWorld space from
+// MySector.MainCamera. SmoothFrames interpolates the render camera, so
+// gathering those world quads as-is leaves the overlay in last-pose world
+// space (doorway ghost). Freeze copies in layout view space on the session
+// thread, parent them to Environment.InvViewD at present. Do not rewrite
+// view-projection (that made a skybox-locked blob).
 internal static class BillboardOutputPass
 {
     private const int PostPpBucket = 4;
@@ -20,19 +28,25 @@ internal static class BillboardOutputPass
     private static bool _drawingPostPp;
 
     private static bool _drewHudThisScene;
+    private static int _drewHudCount;
     private static readonly object SnapshotLock = new();
     private static readonly List<MyBillboard> PendingAdds = new(512);
     private static readonly List<MyBillboard> UniqueScratch = new(512);
     private static List<MyBillboard> _published = new(512);
     private static List<MyBillboard> _publishScratch = new(512);
     private static readonly List<MyBillboard> Snapshot = new(512);
-    private static readonly HashSet<MyBillboard> Seen = [];
+    private static readonly List<MyBillboard> CaptureRefs = new(512);
+    // Capture (render thread) and Dedupe (HUD / Publish postfix) used to share
+    // one HashSet. Master's DrawUI walks persistents on the session thread;
+    // CaptureLivePostPp walks them on the render thread. .NET 10 HashSet.Add
+    // throws InvalidOperationException; RHUD ExceptionHandler then reloads.
+    private static readonly HashSet<MyBillboard> CaptureSeen = [];
+    private static readonly HashSet<MyBillboard> DedupeSeen = [];
     private static readonly int[] BlendHistogram = new int[8];
-    private static MatrixD _pendingCameraWorld;
-    private static MatrixD _publishedCameraWorld;
-    private static bool _hasPendingCamera;
-    private static bool _hasPublishedCamera;
     private static int _lastSubmitTick;
+    private static int _walkingPersistents;
+    private static bool _publishing;
+    private static bool _publishedAreViewLocal;
 
     // Retain the last complete HUD frame across empty submissions, then expire it to prevent frozen overlays.
     private const int StaleHudMs = 200;
@@ -40,13 +54,16 @@ internal static class BillboardOutputPass
     public static void BeginDraw()
     {
         _drewHudThisScene = false;
+        _drewHudCount = 0;
     }
 
     public static void Reset()
     {
         _drawingPostPp = false;
         _drewHudThisScene = false;
-        _lastHudLog = null;
+        _drewHudCount = 0;
+        _walkingPersistents = 0;
+        _publishing = false;
 
         lock (SnapshotLock)
         {
@@ -55,50 +72,90 @@ internal static class BillboardOutputPass
             _published.Clear();
             _publishScratch.Clear();
             Snapshot.Clear();
-            Seen.Clear();
+            CaptureRefs.Clear();
+            CaptureSeen.Clear();
+            DedupeSeen.Clear();
+            _publishedAreViewLocal = false;
             Array.Clear(BlendHistogram, 0, BlendHistogram.Length);
-            _pendingCameraWorld = default(MatrixD);
-            _publishedCameraWorld = default(MatrixD);
-            _hasPendingCamera = false;
-            _hasPublishedCamera = false;
             _lastSubmitTick = 0;
         }
     }
 
     public static void PublishCompletedFrame()
     {
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive)
+        // Master FinishDraw: ApplyActionOnPersistentBillboards(Action) after
+        // Parallel.For writes persistents. That call is session-thread and
+        // often has empty PendingAdds (in-place HUD, not AddBillboard clones).
+        if (!DlssRuntime.IsLive || _publishing)
+            return;
+        if (IsRenderThread())
             return;
 
-        int count;
-        lock (SnapshotLock)
+        _publishing = true;
+        try
         {
-            if (PendingAdds.Count == 0)
-                return;
+            UniqueScratch.Clear();
+            DedupeSeen.Clear();
+            _walkingPersistents++;
+            try
+            {
+                MyRenderProxy.ApplyActionOnPersistentBillboards(ConsiderPublish);
+            }
+            finally
+            {
+                _walkingPersistents--;
+            }
 
-            DedupeInto(PendingAdds, UniqueScratch);
-            PendingAdds.Clear();
-            FreezeInto(UniqueScratch, _publishScratch);
+            int count;
+            lock (SnapshotLock)
+            {
+                if (UniqueScratch.Count == 0)
+                    DedupeInto(PendingAdds, UniqueScratch);
+                PendingAdds.Clear();
+                if (UniqueScratch.Count == 0)
+                    return;
 
-            (_published, _publishScratch) = (_publishScratch, _published);
+                FreezeInto(UniqueScratch, _publishScratch);
+                var camera = MySector.MainCamera;
+                var view = camera != null ? camera.ViewMatrix : default;
+                if (camera != null && view.IsValid())
+                {
+                    PostPpHudSpace.ToViewLocal(_publishScratch, view);
+                    _publishedAreViewLocal = true;
+                }
+                else
+                {
+                    _publishedAreViewLocal = false;
+                }
 
-            _publishedCameraWorld = _pendingCameraWorld;
-            _hasPublishedCamera = _hasPendingCamera;
-            _hasPendingCamera = false;
-            NoteHudSubmitLocked();
-            count = _published.Count;
+                var published = _published;
+                _published = _publishScratch;
+                _publishScratch = published;
+
+                NoteHudSubmitLocked();
+                count = _published.Count;
+            }
+
+            LogHudOnce("Published view-local PostPP frame count=" + count);
         }
-
-        LogHudOnce("Published complete PostPP frame count=" + count);
+        catch (Exception e)
+        {
+            // Postfix runs under Master's DrawUI / ExceptionHandler.Run.
+            // A throw here closes the terminal. Log and keep Master alive.
+            DebugLog.Write("PublishCompletedFrame: " + e);
+        }
+        finally
+        {
+            _publishing = false;
+        }
     }
 
     public static void NoteAdd(MyBillboard billboard)
     {
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || !IsPostPp(billboard))
+        if (!DlssRuntime.IsLive || !IsPostPp(billboard))
             return;
         lock (SnapshotLock)
         {
-            CapturePendingCameraIfNeeded();
             PendingAdds.Add(billboard);
             NoteHudSubmitLocked();
         }
@@ -106,7 +163,7 @@ internal static class BillboardOutputPass
 
     public static void NoteAdds(IEnumerable<MyBillboard> billboards)
     {
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || billboards == null)
+        if (!DlssRuntime.IsLive || billboards == null)
             return;
         lock (SnapshotLock)
         {
@@ -115,7 +172,6 @@ internal static class BillboardOutputPass
             {
                 if (!IsPostPp(billboard))
                     continue;
-                CapturePendingCameraIfNeeded();
                 PendingAdds.Add(billboard);
                 added = true;
             }
@@ -128,74 +184,88 @@ internal static class BillboardOutputPass
     {
         LogHudOnce("RenderPostPP enter live=" + DlssRuntime.IsLive +
                    " target=" + (target != null ? target.Size.ToString() : "null") +
-                   " pending=" + PendingCount());
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || _drawingPostPp ||
-            rc == null || target == null)
+                   " pending=" + PendingCount() +
+                   " yieldPresent=" + DlssRuntime.ShouldYieldPresentPath +
+                   " " + DescribeBuckets());
+        if (!DlssRuntime.IsLive)
             return false;
 
-        BindUnjitteredFrameConstants();
-        return TryDrawCaptured(rc, target, "RenderPostPP");
+        // Keen binds internal GBuffer depth as DSV against an output-sized
+        // dest, so D3D drops the draw. Skip it. Composite after CopyToRT
+        // onto Backbuffer (DrawScene postfix), not onto this HDR UAV.
+        return true;
+    }
+
+    public static void TryDrawOnSceneDest(ISrvBindable source, string reason)
+    {
+        if (!DlssRuntime.IsLive || source == null)
+            return;
+        if (_drewHudThisScene && PublishedCount() <= _drewHudCount)
+            return;
+        var dest = AsHudDest(source);
+        var rc = MyRender11.RC;
+        if (dest == null || rc == null)
+            return;
+        TryDrawOnto(rc, dest, HudViewport(dest), reason);
     }
 
     public static void TryDrawAfterSceneBlit()
     {
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || _drewHudThisScene)
+        if (!DlssRuntime.IsLive)
             return;
-        var dest = MyRender11.Backbuffer;
+        if (_drewHudThisScene && PublishedCount() <= _drewHudCount)
+            return;
+        var dest = UnwrapHudTarget(MyRender11.Backbuffer);
         var rc = MyRender11.RC;
         if (dest == null || rc == null)
             return;
-        BindUnjitteredFrameConstants();
-        TryDrawCaptured(rc, dest, "CopyToRT");
+        DlssRuntime.RestoreViewportToOutput();
+        var viewport = DlssRuntime.OutputPixelSize();
+        if (viewport.X <= 0 || viewport.Y <= 0)
+            return;
+        TryDrawOnto(rc, dest, viewport, "present");
     }
 
-    private static bool TryDrawCaptured(MyRenderContext rc, IRtvBindable target, string reason)
+    /// <summary>
+    /// Composite bucket 4 onto the scene dest (HDR / chromatic / LDR) with
+    /// no DSV. Do not rewrite view-projection (that made a world-space ghost).
+    /// </summary>
+    static bool TryDrawOnto(MyRenderContext rc, IRtvBindable dest, Vector2I viewport, string reason)
     {
-        if (_drewHudThisScene || _drawingPostPp || rc == null || target == null)
+        if (_drawingPostPp || rc == null || dest == null)
+            return true;
+        if (_drewHudThisScene && PublishedCount() <= _drewHudCount)
             return true;
 
-        var captured = CaptureForDraw();
-        if (captured == 0)
-            return true;
-
-        var prepared = PrepareFromSnapshot();
-        if (prepared > 0)
+        DlssRuntime.BindUnjitteredHudConstants();
+        if (!EnsurePostPpBatches(rc))
         {
-            MyBillboardRenderer.GatherInternal(rc);
-            MyBillboardRenderer.TransferData(rc);
+            LogHudOnce(reason + " no PostPP bucket dest=" + dest.Size + " " + DescribeBuckets());
+            return true;
         }
 
-        FillHistogram();
-        var output = DlssRuntime.OutputPixelSize();
-        LogHudOnce(reason + " captured=" + captured +
-                   " indexed=" + Snapshot.Count +
-                   " postpp=" + BlendHistogram[PostPpBucket] +
-                   " dest=" + target.Size +
-                   " output=" + output +
-                   " " + DescribeSample() +
-                   " " + DescribeBuckets());
-
-        if (!HasBucket(PostPpBucket))
-            return true;
-
-        if (!DlssRuntime.TryGetHudTargetSize(target, out var viewport))
+        if (dest.Rtv == null)
         {
-            LogHudOnce(reason + " skip internal dest=" + target.Size +
-                       " output=" + DlssRuntime.OutputPixelSize());
+            LogHudOnce(reason + " dest has no RTV size=" + dest.Size);
             return true;
         }
 
         _drawingPostPp = true;
         try
         {
-            rc.SetViewport(0f, 0f, viewport.X, viewport.Y);
+            rc.ComputeShader.SetUav(0, null);
             rc.SetBlendState(MyBlendStateManager.BlendAlphaPremult);
             rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
-            rc.SetRtv(target);
+            BindHudRtv(rc, dest);
+            // SetRtv does not set the viewport. Backbuffer.Size follows
+            // ResolutionI (internal) after SetDRS; the DXGI buffer is output.
+            rc.SetViewport(0f, 0f, viewport.X, viewport.Y);
             try
             {
-                MyBillboardRenderer.Render(rc, null, MyBillboardRenderer.m_bucketBatches[PostPpBucket], false, true);
+                MyBillboardRenderer.Render(
+                    rc, null, MyBillboardRenderer.m_bucketBatches[PostPpBucket], false, true);
                 _drewHudThisScene = true;
+                _drewHudCount = Math.Max(PostPpGatheredCount(), Snapshot.Count);
             }
             finally
             {
@@ -206,21 +276,163 @@ internal static class BillboardOutputPass
         {
             _drawingPostPp = false;
         }
+
+        LogHudOnce(reason + " dest=" + dest.GetType().Name + " " + dest.Size +
+                   " output=" + viewport + " " + DescribeBuckets());
         return true;
     }
 
-    private static void BindUnjitteredFrameConstants()
+    static bool EnsurePostPpBatches(MyRenderContext rc)
     {
-        var env = MyRender11.Environment;
-        if (env != null)
-            Jitter.Restore(env.Matrices);
-        MyCommon.UpdateFrameConstants();
-        DlssRuntime.ApplyOutputSpace();
+        if (rc == null || _drawingPostPp)
+            return HasBucket(PostPpBucket);
+
+        CaptureLivePostPp();
+        var live = Snapshot.Count;
+        if (live == 0)
+            return false;
+
+        var gathered = PostPpGatheredCount();
+        var safe = PrepareFromSnapshot();
+        if (safe <= 0)
+            return false;
+
+        // Camera-relative verts. Reusing last frame's VB with a new view
+        // locks the overlay to skybox space (the black blob).
+        MyBillboardRenderer.GatherInternal(rc);
+        MyBillboardRenderer.TransferData(rc);
+        LogHudOnce("rebuild PostPP live=" + live + " gathered=" + gathered +
+                   " batches=" + (HasBucket(PostPpBucket) ? MyBillboardRenderer.m_bucketBatches[PostPpBucket].Count : 0) +
+                   " cvp=" + (Snapshot.Count > 0 ? Snapshot[0].CustomViewProjection.ToString() : "none"));
+        return HasBucket(PostPpBucket);
+    }
+
+    static int PostPpGatheredCount()
+    {
+        var counts = MyBillboardRenderer.m_bucketCounts;
+        if (counts == null || (uint)PostPpBucket >= (uint)counts.Length)
+            return 0;
+        return counts[PostPpBucket];
+    }
+
+    static Vector2I HudViewport(IRtvBindable dest)
+    {
+        var output = DlssRuntime.OutputPixelSize();
+        if (output.X <= 0 || output.Y <= 0)
+            return dest != null ? dest.Size : default;
+        if (dest != null && dest.Size.X == output.X && dest.Size.Y == output.Y)
+            return dest.Size;
+        return output;
+    }
+
+    static IRtvBindable AsHudDest(object texture)
+    {
+        switch (texture)
+        {
+            case IBorrowedCustomTexture borrowed:
+                return UnwrapHudTarget(borrowed.Linear) ?? UnwrapHudTarget(borrowed.SRgb);
+            case ICustomTexture custom:
+                return UnwrapHudTarget(custom.Linear) ?? UnwrapHudTarget(custom.SRgb);
+            case IRtvBindable rtv:
+                return UnwrapHudTarget(rtv);
+            default:
+                return null;
+        }
+    }
+
+    static bool CaptureLivePostPp()
+    {
+        var viewLocal = false;
+        lock (SnapshotLock)
+        {
+            if (HudSnapshotIsStaleLocked())
+                ClearPublishedLocked();
+
+            if (_published.Count > 0 && _publishedAreViewLocal)
+            {
+                FreezeInto(_published, Snapshot);
+                viewLocal = true;
+            }
+        }
+
+        if (viewLocal)
+        {
+            PostPpHudSpace.ToWorldFromViewLocal(Snapshot);
+            return Snapshot.Count > 0;
+        }
+
+        CaptureRefs.Clear();
+        CaptureSeen.Clear();
+
+        try
+        {
+            var read = MyRenderProxy.BillboardsRead;
+            if (read != null)
+            {
+                foreach (var billboard in read)
+                    ConsiderCapture(billboard);
+            }
+
+            var oncePool = MyBillboardRenderer.m_billboardsOncePool;
+            if (oncePool != null)
+            {
+                var onceCount = oncePool.GetAllocatedCount();
+                for (var i = 0; i < onceCount; i++)
+                    ConsiderCapture(oncePool.GetAllocatedItem(i));
+            }
+
+            _walkingPersistents++;
+            try
+            {
+                MyRenderProxy.ApplyActionOnPersistentBillboards(ConsiderCapture);
+            }
+            finally
+            {
+                _walkingPersistents--;
+            }
+        }
+        catch (Exception e)
+        {
+            LogHudOnce("CaptureLivePostPp proxy: " + e.GetType().Name);
+        }
+
+        lock (SnapshotLock)
+        {
+            foreach (var billboard in PendingAdds)
+                ConsiderCapture(billboard);
+
+            FreezeInto(CaptureRefs, Snapshot);
+        }
+
+        return Snapshot.Count > 0;
+    }
+
+    static IRtvBindable UnwrapHudTarget(IRtvBindable target)
+    {
+        if (target is ICustomTexture custom)
+        {
+            if (custom.Linear != null)
+                return custom.Linear;
+            if (custom.SRgb != null)
+                return custom.SRgb;
+        }
+
+        return target;
+    }
+
+    static void BindHudRtv(MyRenderContext rc, IRtvBindable target)
+    {
+        rc.ResetTargets();
+        var rtv = target?.Rtv;
+        if (rtv != null && rc.DeviceContext != null)
+            rc.DeviceContext.OutputMerger.SetTargets((DepthStencilView)null, 1, new[] { rtv });
+        if (target != null)
+            rc.SetRtv(target);
     }
 
     public static bool TryRender(MyRenderContext rc, ISrvBindable depthRead, IRtvBindable target, int bucket)
     {
-        if (DlssRuntime.ShouldYieldPresentPath || !DlssRuntime.IsLive || rc == null || target == null)
+        if (!DlssRuntime.IsLive || rc == null || target == null)
             return false;
         var sceneDepth = MyGBuffer.Main?.ResolvedDepthStencil;
         if (sceneDepth == null || (target.Size.X == sceneDepth.Size.X && target.Size.Y == sceneDepth.Size.Y))
@@ -255,7 +467,7 @@ internal static class BillboardOutputPass
 
         DebugLog.WriteFrame("Billboard LDR no-depth fallback dest=" + target.Size + " depth=" + sceneDepth.Size);
         rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
-        rc.SetRtv(target);
+        BindHudRtv(rc, UnwrapHudTarget(target));
         try
         {
             MyBillboardRenderer.Render(rc, depthRead, MyBillboardRenderer.m_bucketBatches[bucket], false, true);
@@ -273,10 +485,15 @@ internal static class BillboardOutputPass
             return PendingAdds.Count;
     }
 
+    private static int PublishedCount()
+    {
+        lock (SnapshotLock)
+            return _published.Count;
+    }
+
     private static int CaptureForDraw()
     {
-        MatrixD sourceCamera;
-        bool reanchor;
+        var viewLocal = false;
         lock (SnapshotLock)
         {
             if (HudSnapshotIsStaleLocked())
@@ -288,12 +505,11 @@ internal static class BillboardOutputPass
             }
 
             FreezeInto(_published, Snapshot);
-            sourceCamera = _publishedCameraWorld;
-            reanchor = _hasPublishedCamera;
+            viewLocal = _publishedAreViewLocal;
         }
 
-        if (reanchor)
-            ReanchorToRenderCamera(sourceCamera);
+        if (viewLocal)
+            PostPpHudSpace.ToWorldFromViewLocal(Snapshot);
         return Snapshot.Count;
     }
 
@@ -315,8 +531,27 @@ internal static class BillboardOutputPass
     private static void ClearPublishedLocked()
     {
         _published.Clear();
-        _hasPublishedCamera = false;
-        _hasPendingCamera = false;
+        _publishedAreViewLocal = false;
+    }
+
+    private static bool IsRenderThread()
+    {
+        var renderThread = MyRender11.RenderThread;
+        return renderThread != null && Thread.CurrentThread == renderThread;
+    }
+
+    private static void ConsiderPublish(MyBillboard billboard)
+    {
+        if (billboard == null || !IsPostPp(billboard) || !DedupeSeen.Add(billboard))
+            return;
+        UniqueScratch.Add(billboard);
+    }
+
+    private static void ConsiderCapture(MyBillboard billboard)
+    {
+        if (billboard == null || !IsPostPp(billboard) || !CaptureSeen.Add(billboard))
+            return;
+        CaptureRefs.Add(billboard);
     }
 
     private static bool IsPostPp(MyBillboard billboard)
@@ -324,24 +559,13 @@ internal static class BillboardOutputPass
         return billboard is { BlendType: MyBillboard.BlendTypeEnum.PostPP };
     }
 
-    private static void CapturePendingCameraIfNeeded()
-    {
-        if (_hasPendingCamera)
-            return;
-        var camera = MyAPIGateway.Session?.Camera;
-        if (camera == null)
-            return;
-        _pendingCameraWorld = camera.WorldMatrix;
-        _hasPendingCamera = true;
-    }
-
     private static void DedupeInto(List<MyBillboard> source, List<MyBillboard> dest)
     {
         dest.Clear();
-        Seen.Clear();
+        DedupeSeen.Clear();
         foreach (var billboard in source)
         {
-            if (billboard == null || !Seen.Add(billboard))
+            if (billboard == null || !DedupeSeen.Add(billboard))
                 continue;
             dest.Add(billboard);
         }
@@ -393,34 +617,6 @@ internal static class BillboardOutputPass
             copyTriangle.UV1 = sourceTriangle.UV1;
             copyTriangle.UV2 = sourceTriangle.UV2;
             copyTriangle.Normal0 = sourceTriangle.Normal0;
-        }
-    }
-
-    private static void ReanchorToRenderCamera(MatrixD sourceCameraWorld)
-    {
-        var env = MyRender11.Environment != null ? MyRender11.Environment.Matrices : null;
-        if (env == null)
-            return;
-
-        var sourceInverse = MatrixD.Invert(sourceCameraWorld);
-        var sourceToRender = sourceInverse * env.InvViewD;
-        foreach (var billboard in Snapshot)
-        {
-            if (billboard.ParentID != uint.MaxValue ||
-                billboard.CustomViewProjection != -1 ||
-                billboard.LocalType != MyBillboard.LocalTypeEnum.Custom)
-                continue;
-
-            billboard.Position0 = Vector3D.Transform(billboard.Position0, sourceToRender);
-            billboard.Position1 = Vector3D.Transform(billboard.Position1, sourceToRender);
-            billboard.Position2 = Vector3D.Transform(billboard.Position2, sourceToRender);
-            billboard.Position3 = Vector3D.Transform(billboard.Position3, sourceToRender);
-
-            if (billboard is MyTriangleBillboard triangle)
-            {
-                var normal = Vector3D.TransformNormal(triangle.Normal0, sourceToRender);
-                triangle.Normal0 = normal;
-            }
         }
     }
 
@@ -523,6 +719,7 @@ internal static class BillboardOutputPass
             return "sample=none";
         var billboard = Snapshot[0];
         return "sample blend=" + billboard.BlendType +
+               " cvp=" + billboard.CustomViewProjection +
                " mat=" + billboard.Material +
                " p0=" + billboard.Position0;
     }
@@ -541,20 +738,31 @@ internal static class BillboardOutputPass
                 buckets += batches[i].Count;
             }
         }
+        var counts = "null";
+        var bucketCounts = MyBillboardRenderer.m_bucketCounts;
+        if (bucketCounts != null)
+        {
+            counts = "";
+            for (var i = 0; i < bucketCounts.Length; i++)
+            {
+                if (i > 0)
+                    counts += ",";
+                counts += bucketCounts[i];
+            }
+        }
+
         return "eval=" + DlssRuntime.EvaluatedThisFrame +
                " live=" + DlssRuntime.IsLive +
+               " snapshot=" + Snapshot.Count +
+               " published=" + PublishedCount() +
+               " bucketCounts=" + counts +
                " bucketBatches=" + buckets;
     }
 
-    private static string _lastHudLog;
-
     public static void LogHudOnce(string message)
     {
+        // rebuild / present alternate every frame; do not write SpaceEngineers.log.
         DebugLog.WriteFrame(message);
-        if (_lastHudLog == message)
-            return;
-        _lastHudLog = message;
-        MyLog.Default.WriteLine("DLSS HUD: " + message);
     }
 }
 
@@ -572,7 +780,7 @@ internal static class BillboardLdrPatch
 internal static class BillboardPostPpPatch
 {
     [HarmonyPrefix]
-    private static bool Prefix(MyRenderContext rc, IRtvBindable target)
+    private static bool Prefix(MyRenderContext rc, ISrvBindable depthRead, IRtvBindable target)
     {
         return !BillboardOutputPass.TryRenderPostPp(rc, target);
     }
@@ -607,6 +815,13 @@ internal static class BillboardFrameCompletePatch
     [HarmonyPostfix]
     private static void Postfix()
     {
-        BillboardOutputPass.PublishCompletedFrame();
+        try
+        {
+            BillboardOutputPass.PublishCompletedFrame();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("BillboardFrameCompletePatch: " + e);
+        }
     }
 }

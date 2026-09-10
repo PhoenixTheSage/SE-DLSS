@@ -2,7 +2,7 @@
 
 Pulsar client plugin that adds **NVIDIA DLSS Super Resolution** and **DLAA** to Space Engineers 1 (DX11). Frame Generation is not supported.
 
-Architecture supports [Rich HUD Framework](https://github.com/DarkHelmet/RichHudFramework)
+Settings live in the Pulsar plugin dialog. When [Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) and [Rich HUD Master](https://steamcommunity.com/workshop/filedetails/?id=1965654081) are in the world, the same options appear under **Anomaly Shaders → DLSS → Settings**. This plugin does not vendor a Rich HUD client.
 
 ## Requirements
 
@@ -21,7 +21,7 @@ Plugin config or **Options → Graphics → Anti-aliasing**:
 
 MSAA is not in the current graphics UI and is incompatible with DLSS.
 
-Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is also loaded. Anomaly is optional and discovered at runtime ([shader developer wiki](https://github.com/PhoenixTheSage/Anomaly/wiki)):
+Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framework](https://github.com/PhoenixTheSage/Anomaly) is also loaded. Anomaly is optional: the plugin attaches or detaches at runtime from type detection, with no config or terminal toggle ([shader developer wiki](https://github.com/PhoenixTheSage/Anomaly/wiki)):
 
 - **Velocity** — `VelocityRegistry.Active` (object motion). Camera-from-depth remains the fallback.
 - **Reactive mask** — catalog `reactiveMask`, bound as DLSS bias-current-color when a pack marks pixels that must not use history.
@@ -29,6 +29,8 @@ Motion vectors are camera-reprojected from depth unless [Anomaly Shader Framewor
 - **History** — `FrameTemporal.InvalidateHistory()` on camera cuts this plugin owns.
 
 No compile-time Anomaly reference. NVIDIA RTX is required for DLSS; Anomaly itself does not need it.
+
+Optional [Rich HUD Master](https://steamcommunity.com/workshop/filedetails/?id=1965654081) plus Anomaly mirrors the Pulsar dialog as **Anomaly Shaders → DLSS → Settings** via Anomaly's `TerminalConfigRegistry` (no compile-time Anomaly reference, no second Rich HUD client). Without Anomaly, use Pulsar MyGui. No PluginHub `DependencyIds`. See [Terminal config](https://github.com/PhoenixTheSage/Anomaly/wiki/Terminal-config).
 
 ## Driver / NGX
 
@@ -57,7 +59,7 @@ These plugins patch the same render-thread surfaces. Prefer not enabling them to
 
 Overlap: `MyToneMapping.Run`, `MyCopyToRT.Run`, and emissive billboards. HdrRender replaces Keen's SDR tone-map with an HDR path and owns the scRGB swapchain.
 
-When Anomaly is loaded this plugin `ClaimUpscale("se-dlss")` at init. If `HasDisplayTenant` (HdrRender-class BT.2390 registered AfterUpscale with `TemporalPolicy.Display`), DLSS skips Keen SDR and does not evaluate HdrRender's scRGB `MyToneMapping.Run` result. It evaluates catalog `hdrColor` (LBuffer) into an output-sized HDR dest and calls `NotifyUpscaleComplete(rc, dest)` so AfterUpscale reads `upscaledColor`. `CopyToRT` and LDR billboards yield when that Display tenant is present or the backbuffer is already `R16G16B16A16`.
+When Anomaly is loaded this plugin claims `ClaimUpscale("se-dlss")` while DLSS is live and **releases** the slot when anti-aliasing is Off or FXAA so a Display tenant can grade `LBuffer` without an upscaler (`CompleteDisplayWithoutUpscale`). If `HasDisplayTenant` (HdrRender-class BT.2390 registered AfterUpscale with `TemporalPolicy.Display`) **or** the swapchain is already scRGB, DLSS skips Keen SDR and does not evaluate HdrRender's scRGB `MyToneMapping.Run` result. It evaluates catalog `hdrColor` (LBuffer) into an output-sized **fp16** dest (`R16G16B16A16_Float`) with NGX `IsHDR`, then calls `NotifyUpscaleComplete(rc, dest)` so AfterUpscale reads `upscaledColor`. `CopyToRT` onto the scRGB swapchain yields when that Display tenant is present. PostPP / LDR billboards still draw onto the output dest without binding internal-res depth (Keen's `RenderPostPP` would pair mismatched DSV+RTV and drop the HUD). Show Status reports the last evaluate **path** (HDR hdrColor / HDR LBuffer / LDR tonemap) and color/dest formats; those persist across the Draw prefix so a pause dialog cannot relabel a successful HDR reconstruct as LDR.
 
 Without a Display tenant, keep using one or the other. A HdrRender fork still has to `Register("hdr.tonemap", "AfterUpscale", …, Display)` and yield its tonemap prefix when `HasUpscaleConsumer`.
 

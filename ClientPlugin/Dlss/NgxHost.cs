@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using SharpDX.Direct3D11;
 using VRage.Utils;
 using Device = SharpDX.Direct3D11.Device;
@@ -28,6 +29,8 @@ public static class NgxHost
     private static uint _lastOutH;
     private static int _lastQuality = int.MinValue;
     private static int _lastPreset = int.MinValue;
+    private static bool _lastHdr;
+    public static bool FeatureIsHdr => _lastHdr;
 
     public static void AddSearchPath(string path)
     {
@@ -46,6 +49,21 @@ public static class NgxHost
     public static string SearchPathSummary()
     {
         return SearchPaths.Count == 0 ? "(none)" : string.Join("; ", SearchPaths);
+    }
+
+    internal static void AppendSearchPaths(StringBuilder sb, string indent)
+    {
+        if (sb == null)
+            return;
+        indent ??= "";
+        if (SearchPaths.Count == 0)
+        {
+            sb.Append(indent).AppendLine("(none)");
+            return;
+        }
+
+        foreach (var path in SearchPaths)
+            sb.Append(indent).AppendLine(path);
     }
 
     public static bool TryInit(Device device, string logPath)
@@ -140,8 +158,9 @@ public static class NgxHost
 
         var quality = ToNgxQuality(mode);
         var preset = ToNgxPreset(Config.Current.Model);
+        var hdr = DlssRuntime.WantsHdrEvaluate;
         if (IsReady && _lastQuality == quality && _lastPreset == preset &&
-            _lastOutW == outputWidth && _lastOutH == outputHeight)
+            _lastOutW == outputWidth && _lastOutH == outputHeight && _lastHdr == hdr)
         {
             renderWidth = (uint)DlssRuntime.InternalWidth;
             renderHeight = (uint)DlssRuntime.InternalHeight;
@@ -149,8 +168,8 @@ public static class NgxHost
         }
 
         DebugLog.Write("SetMode quality=" + quality + " preset=" + preset +
-                       " out=" + outputWidth + "x" + outputHeight);
-        if (!NgxApi.SetMode(quality, outputWidth, outputHeight, preset,
+                       " hdr=" + (hdr ? 1 : 0) + " out=" + outputWidth + "x" + outputHeight);
+        if (!NgxApi.SetMode(quality, outputWidth, outputHeight, preset, hdr,
                 out renderWidth, out renderHeight, out var sharpness))
         {
             IsReady = false;
@@ -159,10 +178,13 @@ public static class NgxHost
             return false;
         }
 
+        if (_lastHdr != hdr)
+            DlssRuntime.NotifyHdrFeatureChanged();
         _lastQuality = quality;
         _lastPreset = preset;
         _lastOutW = outputWidth;
         _lastOutH = outputHeight;
+        _lastHdr = hdr;
         IsReady = true;
         LastError = NgxApi.LastError;
         DebugLog.Write(
@@ -303,6 +325,7 @@ public static class NgxHost
         _lastOutH = 0;
         _lastQuality = int.MinValue;
         _lastPreset = int.MinValue;
+        _lastHdr = false;
         LastError = "shutdown";
     }
 

@@ -37,7 +37,13 @@ internal static class DrawScenePatch
         var env = MyRender11.Environment;
         if (env != null)
             Jitter.Restore(env.Matrices);
-        if (DlssRuntime.IsLive)
-            DlssRuntime.ApplyOutputSpace();
+        if (!DlssRuntime.IsLive)
+            return;
+        DlssRuntime.BindUnjitteredHudConstants();
+        var output = DlssRuntime.OutputPixelSize();
+        var rc = MyRender11.RC;
+        if (rc != null && output.X > 0 && output.Y > 0)
+            rc.SetViewport(0f, 0f, output.X, output.Y);
+        BillboardOutputPass.TryDrawAfterSceneBlit();
     }
 }

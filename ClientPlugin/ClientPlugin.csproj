@@ -23,8 +23,8 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
 
     <!-- Default versions; overridden by Version.Build.props  -->
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
-    <FileVersion>1.2.0.0</FileVersion>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
     <PathSeparator Condition="$([MSBuild]::IsOSPlatform('Windows'))">\</PathSeparator>
     <PathSeparator Condition="!$([MSBuild]::IsOSPlatform('Windows'))">/</PathSeparator>
 
@@ -308,6 +308,7 @@
   <ItemGroup>
     <Publicize Include="VRage.Render11"/>
   </ItemGroup>
+
   <Target Name="VerifyProps" BeforeTargets="BeforeBuild">
     <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))"
           Command="call &quot;$(RepoRoot)verify_props.bat&quot; &quot;$(Bin64)&quot;" />

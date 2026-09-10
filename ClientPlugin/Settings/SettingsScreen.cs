@@ -54,6 +54,7 @@ internal class SettingsScreen : MyGuiScreenBase
     public override void OnRemoved()
     {
         ConfigStorage.Save(Config.Current);
+        ConfigStorage.FlushPending(true);
         base.OnRemoved();
     }
 

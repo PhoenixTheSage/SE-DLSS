@@ -17,6 +17,9 @@ internal static class CopyToRtPatch
     {
         if (_passthrough)
             return true;
+        // HDR evaluate dest is still a UAV. Drawing PostPP on it is dropped,
+        // and treating that as success skipped the swapchain pass. Keen
+        // copies the scene; HUD composites after DrawScene jitter restore.
         if (DlssRuntime.ShouldYieldPresentPath)
             return true;
         if (!DlssRuntime.IsLive || destination == null || source == null)
@@ -41,19 +44,5 @@ internal static class CopyToRtPatch
             DlssRuntime.RestoreViewportToOutput();
         }
         return false;
-    }
-
-    [HarmonyPostfix]
-    private static void Postfix(IRtvBindable destination)
-    {
-        if (_passthrough)
-            return;
-        if (DlssRuntime.ShouldYieldPresentPath)
-            return;
-        if (!DlssRuntime.IsLive || destination == null)
-            return;
-        if (!ReferenceEquals(destination, MyRender11.Backbuffer))
-            return;
-        BillboardOutputPass.TryDrawAfterSceneBlit();
     }
 }

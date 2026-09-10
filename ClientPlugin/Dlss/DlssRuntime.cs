@@ -31,13 +31,15 @@ public static class DlssRuntime
     public static bool UsedReactiveMask { get; private set; }
     public static bool EvaluatedThisFrame { get; set; }
     public static bool LastEvaluateWasHdr { get; private set; }
+    public static string LastEvaluatePath { get; private set; }
+    public static string LastEvaluateColorDesc { get; private set; }
+    public static string LastEvaluateDestDesc { get; private set; }
     public static int EvaluateCount { get; private set; }
     public static IBorrowedDepthStencilTexture OutputDepthThisFrame { get; private set; }
     private static bool _outputDepthReady;
     private static ICustomTexture _ldrTexture;
     private static PersistentLdrTarget _ldrOutput;
-    private static ICustomTexture _hdrTexture;
-    private static PersistentLdrTarget _hdrOutput;
+    private static IBorrowedCustomTexture _hdrOutput;
 
     private static bool _configChanged = true;
     private static bool _resetHistory = true;
@@ -71,24 +73,31 @@ public static class DlssRuntime
 
     /// <summary>
     /// HdrRender (or another Display tenant) owns present. Do not intercept
-    /// <c>CopyToRT</c> or LDR billboards onto the scRGB swapchain.
+    /// <c>CopyToRT</c> onto the scRGB swapchain. PostPP / LDR billboards still
+    /// run when the dest size does not match GBuffer depth (DLSS output res).
     /// </summary>
-    public static bool ShouldYieldPresentPath =>
+    public static bool ShouldYieldPresentPath => WantsHdrEvaluate;
+
+    /// <summary>
+    /// Pre-tonemap evaluate + NGX <c>IsHDR</c>. Same gate as feature create
+    /// so an scRGB swapchain cannot reconstruct Keen SDR.
+    /// </summary>
+    public static bool WantsHdrEvaluate =>
         AnomalyHook.HasDisplayTenant || IsHdrSwapchainLive;
 
     public static bool IsHdrSwapchainLive
     {
         get
         {
-            var backbuffer = MyRender11.Backbuffer;
-            if (backbuffer?.Resource == null)
-                return false;
             try
             {
-                using var tex = backbuffer.Resource.QueryInterface<Texture2D>();
-                var format = tex.Description.Format;
-                return format == Format.R16G16B16A16_Float ||
-                       format == Format.R16G16B16A16_UNorm;
+                var resource = MyRender11.Backbuffer?.Resource;
+                if (resource == null)
+                    return false;
+                if (resource is Texture2D tex)
+                    return IsHdrColorFormat(tex.Description.Format);
+                using var queried = resource.QueryInterface<Texture2D>();
+                return queried != null && IsHdrColorFormat(queried.Description.Format);
             }
             catch
             {
@@ -96,6 +105,10 @@ public static class DlssRuntime
             }
         }
     }
+
+    static bool IsHdrColorFormat(Format format) =>
+        format == Format.R16G16B16A16_Float ||
+        format == Format.R16G16B16A16_UNorm;
 
     public static void NotifyPluginsReady()
     {
@@ -115,12 +128,19 @@ public static class DlssRuntime
         LastEvaluateFailed = false;
         Jitter.Reset();
         AnomalyHook.InvalidateHistory();
+        AnomalyHook.SyncUpscaleClaim();
         DisableConsoleDrs();
         NgxHost.AllowRetry();
         DebugLog.Write(
             "NotifyConfigChanged aa=" + (Config.Current != null ? Config.Current.AntiAliasing.ToString() : "?") +
             " mode=" + (Config.Current != null ? Config.Current.Mode.ToString() : "?") +
             " model=" + (Config.Current != null ? Config.Current.Model.ToString() : "?"));
+    }
+
+    internal static void NotifyHdrFeatureChanged()
+    {
+        _resetHistory = true;
+        DebugLog.Write("HDR DLSS feature flags changed; history reset");
     }
 
     public static void Shutdown()
@@ -161,6 +181,7 @@ public static class DlssRuntime
         UsedReactiveMask = false;
         EvaluatedThisFrame = false;
         LastEvaluateWasHdr = false;
+        LastEvaluatePath = LastEvaluateColorDesc = LastEvaluateDestDesc = null;
         EvaluateCount = 0;
         LastBindingEvidence = BindingContext = _lastVelocitySource = null;
         _evaluateAttempt = _renderFrame = 0;
@@ -254,6 +275,50 @@ public static class DlssRuntime
         }
     }
 
+    /// <summary>
+    /// PostPP HUD VS multiplies by <c>frame_.Environment.view_projection_matrix</c>.
+    /// <see cref="Jitter.Restore"/> puts env matrices back; PrepareGameScene already
+    /// captured the jittered VP into this CB. Rewrite it from the restored env
+    /// every HUD composite — <see cref="ApplyOutputSpace"/> skips when resolution
+    /// already matches output.
+    /// </summary>
+    public static void BindUnjitteredHudConstants()
+    {
+        var envOwner = MyRender11.Environment;
+        if (envOwner != null)
+            Jitter.Restore(envOwner.Matrices);
+
+        var output = OutputResolution();
+        if (output.X <= 0 || output.Y <= 0)
+            return;
+        MyRender11.ViewportResolution = output;
+
+        var data = MyCommon.FrameConstantsData;
+        var env = envOwner?.Matrices;
+        if (env != null)
+        {
+            data.Environment.View = Matrix.Transpose(env.ViewAt0);
+            data.Environment.Projection = Matrix.Transpose(env.Projection);
+            data.Environment.ProjectionForSkybox = Matrix.Transpose(env.ProjectionForSkybox);
+            data.Environment.ViewProjection = Matrix.Transpose(env.ViewProjectionAt0);
+            data.Environment.InvView = Matrix.Transpose(env.InvViewAt0);
+            data.Environment.InvProjection = Matrix.Transpose(env.InvProjection);
+            data.Environment.InvViewProjection = Matrix.Transpose(env.InvViewProjectionAt0);
+            data.Environment.WorldOffset = new Vector4(env.CameraPosition, 0f);
+        }
+        data.Screen.Resolution = new Vector2(output.X, output.Y);
+        MyCommon.FrameConstantsData = data;
+        var mapping = MyMapping.MapDiscard(MyCommon.FrameConstants);
+        try
+        {
+            mapping.WriteAndPosition(ref MyCommon.FrameConstantsData);
+        }
+        finally
+        {
+            mapping.Unmap();
+        }
+    }
+
     public static bool SettingsMatchOutput(int width, int height)
     {
         var output = OutputResolution();
@@ -294,7 +359,13 @@ public static class DlssRuntime
         UsedReactiveMask = false;
         _renderFrame++;
         AnomalyHook.BeginFrame();
+    }
+
+    public static void NoteLdrEvaluate(IResource destination, ISrvBindable source)
+    {
         LastEvaluateWasHdr = false;
+        LastEvaluatePath = "LDR tonemap";
+        RecordEvaluateFormats(destination, source);
     }
 
     public static void ReleaseOutputDepth()
@@ -337,19 +408,26 @@ public static class DlssRuntime
             return _hdrOutput;
 
         ReleaseHdrOutput();
-        _hdrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.HdrUpscale", output.X, output.Y);
-        if (_hdrTexture == null)
+        var uav = MyManagers.RwTexturesPool.BorrowUav(
+            "DLSS.HdrUpscale", output.X, output.Y, Format.R16G16B16A16_Float);
+        if (uav == null)
             return null;
-        _hdrOutput = new PersistentLdrTarget(_hdrTexture);
+        _hdrOutput = new HdrUavTarget(uav, OnHdrOutputReleased);
         DebugLog.Write("HDR output " + output.X + "x" + output.Y + " fmt=" + _hdrOutput.Format);
         return _hdrOutput;
     }
 
     public static void ReleaseHdrOutput()
     {
+        var dest = _hdrOutput;
         _hdrOutput = null;
-        if (_hdrTexture != null)
-            MyManagers.CustomTextures.DisposeTex(ref _hdrTexture);
+        dest?.Release();
+    }
+
+    static void OnHdrOutputReleased(HdrUavTarget released)
+    {
+        if (ReferenceEquals(_hdrOutput, released))
+            _hdrOutput = null;
     }
 
     /// <summary>
@@ -362,22 +440,28 @@ public static class DlssRuntime
         if (!IsLive || EvaluatedThisFrame)
             return false;
 
-        ISrvBindable source = null;
-        if (!AnomalyHook.TryGetHdrColor(InternalWidth, InternalHeight, out source))
+        var fromCatalog = AnomalyHook.TryGetHdrColor(InternalWidth, InternalHeight, out var source);
+        if (!fromCatalog)
             source = MyGBuffer.Main?.LBuffer;
         if (source == null)
         {
+            LastEvaluatePath = "HDR missing hdrColor/LBuffer";
             DebugLog.Write("HDR evaluate missing hdrColor/LBuffer");
             return false;
         }
 
         var dest = AcquireHdrOutput();
         if (dest == null)
+        {
+            LastEvaluatePath = "HDR dest borrow failed";
             return false;
+        }
 
+        LastEvaluatePath = fromCatalog ? "HDR hdrColor" : "HDR LBuffer";
         if (!TryEvaluate(dest, source))
         {
             DebugLog.Write("ToneMapping HDR evaluate failed src=" + source.Size + " dest=" + dest.Size);
+            ReleaseHdrOutput();
             return false;
         }
 
@@ -393,7 +477,8 @@ public static class DlssRuntime
             MyRender11.RC?.ClearState();
         }
 
-        DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + source.Size + " dest=" + dest.Size);
+        DebugLog.WriteFrame("ToneMapping HDR evaluate src=" + DescribeResource(source) +
+                            " dest=" + DescribeResource(dest));
         return true;
     }
 
@@ -635,16 +720,16 @@ public static class DlssRuntime
         if (depth == null || color == null || output == null)
             return false;
 
+        RenderTraceBind.Begin("DLSS.Evaluate");
         try
         {
             var mvec = IntPtr.Zero;
-            var allowAnomaly = Config.Current?.UseAnomalyMotionVectors ?? true;
             var externalMv = IntPtr.Zero;
             var externalHistory = false;
             object externalSrv = null;
-            var usedExternal = allowAnomaly && AnomalyHook.TryGetLive(
+            var usedExternal = AnomalyHook.TryGetLive(
                 InternalWidth, InternalHeight, out externalMv, out externalHistory, out externalSrv);
-            var rejection = allowAnomaly ? AnomalyHook.SelectionReason : "integration disabled";
+            var rejection = AnomalyHook.SelectionReason;
             var textureEvidence = "";
             SharpDX.Direct3D11.Resource knownVelocity = (externalSrv as ISrvBindable)?.Resource;
             if (usedExternal && !DlssD3d.ValidateVelocity(device, externalMv, InternalWidth, InternalHeight,
@@ -662,8 +747,7 @@ public static class DlssRuntime
             }
             else
             {
-                if (allowAnomaly)
-                    AnomalyHook.NoteCameraFallback();
+                AnomalyHook.NoteCameraFallback();
                 if (Jitter.HasPrevious)
                 {
                     Jitter.CopyToArray(Jitter.JitteredInvViewProjection, InvViewProj);
@@ -743,6 +827,7 @@ public static class DlssRuntime
                                     " reactive=" + (usedReactive ? "anomaly" : "none"));
             }
 
+            RecordEvaluateFormats(destination, source);
             return ok;
         }
         catch (Exception e)
@@ -753,12 +838,36 @@ public static class DlssRuntime
             NgxHost.LastError = e.GetType().Name + ": " + e.Message;
             MyLog.Default.Error("DLSS evaluate threw: " + e);
             DebugLog.Write("TryEvaluate threw " + e);
+            RenderTraceBind.Dump("DLSS.Evaluate", e);
             return false;
         }
         finally
         {
+            RenderTraceBind.End("DLSS.Evaluate");
             // Native passes bypass Keen's D3D11 state cache.
             rc.ClearState();
+        }
+    }
+
+    static void RecordEvaluateFormats(IResource destination, ISrvBindable source)
+    {
+        LastEvaluateColorDesc = DescribeResource(source);
+        LastEvaluateDestDesc = DescribeResource(destination);
+    }
+
+    static string DescribeResource(IResource resource)
+    {
+        if (resource == null)
+            return "null";
+        try
+        {
+            var size = resource.Size;
+            var format = resource is ITexture tex ? tex.Format.ToString() : "?";
+            return format + " " + size.X + "x" + size.Y;
+        }
+        catch (Exception e)
+        {
+            return e.GetType().Name;
         }
     }
 

@@ -12,24 +12,37 @@ internal static class ToneMappingPatch
 {
     private static bool _exceptionLogged;
 
-    // Skip Keen SDR (and HdrRender's scRGB prefix result) when a Display
-    // tenant is registered. Evaluate hdrColor into an output-sized HDR dest.
+    // Skip Keen SDR (and HdrRender's scRGB prefix result) when HDR
+    // evaluate is required. Same gate as NGX IsHDR create flags.
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
-    private static bool Prefix()
+    private static bool Prefix(ref IBorrowedCustomTexture __result)
     {
-        if (!DlssRuntime.IsLive || !AnomalyHook.HasDisplayTenant)
+        if (!DlssRuntime.IsLive || !DlssRuntime.WantsHdrEvaluate)
             return true;
         if (DlssRuntime.EvaluatedThisFrame)
+        {
+            __result = DlssRuntime.AcquireHdrOutput();
             return false;
+        }
         try
         {
-            return !DlssRuntime.TryEvaluateHdrDisplay();
+            if (!DlssRuntime.TryEvaluateHdrDisplay())
+            {
+                // Do not run Keen's SDR operator onto an scRGB dest — that
+                // clips peaks and is what Show Status reported as LDR.
+                DebugLog.Write("ToneMapping skip Keen SDR after HDR evaluate miss");
+                __result = DlssRuntime.AcquireHdrOutput();
+                return false;
+            }
+            __result = DlssRuntime.AcquireHdrOutput();
+            return false;
         }
         catch (Exception e)
         {
             LogOnce(e);
-            return true;
+            __result = DlssRuntime.AcquireHdrOutput();
+            return false;
         }
     }
 
@@ -41,13 +54,8 @@ internal static class ToneMappingPatch
     {
         if (!DlssRuntime.IsLive || DlssRuntime.EvaluatedThisFrame || __result == null)
             return;
-        if (AnomalyHook.HasDisplayTenant)
+        if (DlssRuntime.WantsHdrEvaluate)
             return;
-        if (DlssRuntime.IsHdrSwapchainLive)
-        {
-            DebugLog.WriteFrame("ToneMapping skip LDR evaluate: HDR swapchain live");
-            return;
-        }
         if (__result.Size.X != DlssRuntime.InternalWidth || __result.Size.Y != DlssRuntime.InternalHeight)
             return;
 
@@ -64,6 +72,7 @@ internal static class ToneMappingPatch
                 return;
             }
 
+            DlssRuntime.NoteLdrEvaluate(dest, __result);
             __result.Release();
             __result = dest;
             DlssRuntime.EvaluatedThisFrame = true;

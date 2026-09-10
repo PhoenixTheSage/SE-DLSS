@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using ClientPlugin.Dlss;
 using ClientPlugin.Patches;
+using ClientPlugin.RichHud;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Layouts;
 using HarmonyLib;
@@ -11,8 +12,8 @@ using VRage.Plugins;
 using VRage.Utils;
 
 #if !LOCAL_BUILD
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 #endif
 
 namespace ClientPlugin;
@@ -39,6 +40,8 @@ public sealed class Plugin : IPlugin
         DebugLog.Write("Init search=" + NgxHost.SearchPathSummary());
 
         GpuSupport.TryProbe();
+        AnomalyHook.Probe();
+        AnomalyTerminalHook.TryInstall();
         if (GpuSupport.Probed && !GpuSupport.IsNvidia)
         {
             MyLog.Default.WriteLine("DLSS plugin initialized without Harmony patches. GPU: " + GpuSupport.StatusLine);
@@ -52,6 +55,7 @@ public sealed class Plugin : IPlugin
         DeviceDisposePatch.Apply(deviceHarmony);
         AnomalyHook.Probe();
         AnomalyHook.ClaimUpscale();
+        AnomalyTerminalHook.TryInstall();
         MyLog.Default.WriteLine("DLSS plugin initialized. GPU: " + GpuSupport.StatusLine);
         DebugLog.Write("Harmony patched, plugin initialized GPU=" + GpuSupport.StatusLine);
     }
@@ -70,7 +74,9 @@ public sealed class Plugin : IPlugin
         // process exit; UnpatchAll rewrites shared trampolines while other
         // plugins may still be running. DeviceDisposePatch stays applied so
         // NGX can shut down when the D3D device is released.
+        ConfigStorage.FlushPending(true);
         DlssRuntime.Shutdown();
+        AnomalyTerminalHook.Reset();
         GpuSupport.Reset();
         settingsGenerator = null;
         if (ReferenceEquals(Instance, this))
@@ -84,6 +90,8 @@ public sealed class Plugin : IPlugin
             return;
         // Pulsar finishes every plugin Init before the first Update. NGX D3D11
         // init must not overlap Anomaly (or other plugins) Harmony.PatchAll.
+        AnomalyTerminalHook.TryInstall();
+        ConfigStorage.FlushPending();
         DlssRuntime.NotifyPluginsReady();
     }
 
@@ -109,6 +117,7 @@ public sealed class Plugin : IPlugin
 
         foreach (var pair in assets)
             AddAssetSearchPath(pair.Value, pair.Key);
+        AnomalyTerminalHook.TryInstall();
     }
 
     // Older Pulsar still calls this when an asset is named AssetFolder.
