@@ -1,0 +1,24 @@
+---
+description: Rich HUD sliders must not serialize or write config on every tick
+alwaysApply: true
+---
+
+# Rich HUD config save is not a per-tick write
+
+Rich HUD `ControlChanged` / `CustomValueGetter` runs on the HUD thread, often **every mouse move** on a slider. Master’s `TerminalValue<T>.Update` also assigns `CustomValueGetter()` every `HandleInput` tick. On float sliders the min/max percent round-trip makes `Value != lastValue` after mouse-up, so `ControlChanged` and `ValueText` (`SetText`) keep firing. Space Engineers then reports a later GPU reset as `DXGI_ERROR_DEVICE_REMOVED` (`0x887A0005`); `GetDeviceRemovedReason` may be `DEVICE_HUNG` (`0x887A0006`). Pulsar MyGui has no getter round-trip. The hang is work queued while the HUD or Update thread was in `XmlSerializer` / `File.CreateText` or glyph rebuilds, not “the GPU was unplugged.”
+
+Do **not** construct `new XmlSerializer(typeof(T))` or write a `.cfg` inside a terminal setter. Do **not** attach `CustomValueGetter` to any host control (not only float sliders). Dropdown getters return client `EntryData`; Master’s `TValue` is `ListBoxEntry` — on Pulsar .NET 10 a bound getter `InvalidCastException`s every tick and the terminal closes. Cache one serializer. Mark dirty. Flush from `Plugin.Update` / `Dispose` after the slider is quiet (~400 ms); non-force flush must serialize on a worker, not `File.CreateText` on Update. Pack folder pages must persist **their** config only — Anomaly does not write `Anomaly.cfg` for `RequestFolderPage`.
+
+```text
+# BAD
+set(v) => { Config.Current.Intensity = v; new XmlSerializer(typeof(Config)).Serialize(file, Config.Current); }
+slider.CustomValueGetter = () => Config.Current.Intensity;
+
+# GOOD
+set(v) => Config.Current.Intensity = v;
+ConfigStorage.Save(config);          // marks dirty, cached serializer
+ConfigStorage.FlushPending();        // Plugin.Update: queue worker after 400 ms quiet
+ConfigStorage.FlushPending(true);    // Dispose: wait then sync
+```
+
+Runtime uniforms (`SetUniforms` / `SetEnabled`) may update immediately. Disk I/O must not. See `Docs/TerminalConfig.md` and `wiki/Terminal-config.md`.

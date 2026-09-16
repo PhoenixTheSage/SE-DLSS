@@ -39,10 +39,14 @@ public static class DlssRuntime
     private static bool _outputDepthReady;
     private static ICustomTexture _ldrTexture;
     private static PersistentLdrTarget _ldrOutput;
+    private static ICustomTexture _hdrTexture;
     private static IBorrowedCustomTexture _hdrOutput;
+    private static ICustomTexture _postProcessTexture;
+    private static PersistentLdrTarget _postProcessOutput;
 
     private static bool _configChanged = true;
     private static bool _resetHistory = true;
+    private static bool _ownsInternalDrs;
     private static volatile bool _pluginsReady;
     private static int _consecutiveEvaluateFails;
     private static Vector2I _cachedOutput;
@@ -172,7 +176,16 @@ public static class DlssRuntime
         {
             DebugLog.Write("ReleaseHdrOutput during shutdown: " + e);
         }
+        try
+        {
+            ReleasePostProcessDest();
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("ReleasePostProcessDest during shutdown: " + e);
+        }
         InternalWidth = InternalHeight = OutputWidth = OutputHeight = 0;
+        _ownsInternalDrs = false;
         _cachedOutput = default(Vector2I);
         _configChanged = true;
         _resetHistory = true;
@@ -199,18 +212,23 @@ public static class DlssRuntime
         var target = DesiredInternalResolution();
         if (target.X <= 0 || target.Y <= 0)
             return;
-        if (MyRender11.ResolutionI == target)
-            return;
-
-        // Keen's SetDRS resizes GBuffer/HBAO without using the console DRS Present path.
-        DisableConsoleDrs();
-        DebugLog.Write("SetDRS internal " + MyRender11.ResolutionI + " -> " + target);
-        MyRender11.SetDRS(target);
+        if (MyRender11.ResolutionI != target)
+        {
+            // Keen's SetDRS resizes GBuffer/HBAO without using the console DRS Present path.
+            DisableConsoleDrs();
+            DebugLog.Write("SetDRS internal " + MyRender11.ResolutionI + " -> " + target);
+            MyRender11.SetDRS(target);
+        }
+        _ownsInternalDrs = true;
         PinViewportToInternal();
     }
 
     public static void RestoreOutputResolution()
     {
+        // Another upscaler (FRS) may own DRS. Do not snap back to the swapchain
+        // size unless this plugin applied the internal resolution.
+        if (!_ownsInternalDrs)
+            return;
         DisableConsoleDrs();
         var output = OutputResolution();
         if (output.X <= 0 || output.Y <= 0)
@@ -220,6 +238,7 @@ public static class DlssRuntime
             DebugLog.Write("SetDRS output " + MyRender11.ResolutionI + " -> " + output);
             MyRender11.SetDRS(output);
         }
+        _ownsInternalDrs = false;
         RestoreViewportToOutput();
     }
 
@@ -408,12 +427,30 @@ public static class DlssRuntime
             return _hdrOutput;
 
         ReleaseHdrOutput();
+
+        // HdrRender upgrades MyCustomTexture to fp16. Persist that RT —
+        // DrawGameScene always Release()s the dest, and a pooled UAV
+        // recycled while NGX / AfterUpscale is still in flight hangs the GPU.
+        _hdrTexture = MyManagers.CustomTextures.CreateTexture("DLSS.HdrUpscale", output.X, output.Y);
+        if (_hdrTexture != null)
+        {
+            var fmt = _hdrTexture.Linear != null ? _hdrTexture.Linear.Format : Format.Unknown;
+            if (IsHdrColorFormat(fmt) && _hdrTexture.Uav != null)
+            {
+                _hdrOutput = new PersistentLdrTarget(_hdrTexture);
+                DebugLog.Write("HDR output " + output.X + "x" + output.Y + " fmt=" + fmt + " persistent");
+                return _hdrOutput;
+            }
+
+            MyManagers.CustomTextures.DisposeTex(ref _hdrTexture);
+        }
+
         var uav = MyManagers.RwTexturesPool.BorrowUav(
             "DLSS.HdrUpscale", output.X, output.Y, Format.R16G16B16A16_Float);
         if (uav == null)
             return null;
         _hdrOutput = new HdrUavTarget(uav, OnHdrOutputReleased);
-        DebugLog.Write("HDR output " + output.X + "x" + output.Y + " fmt=" + _hdrOutput.Format);
+        DebugLog.Write("HDR output " + output.X + "x" + output.Y + " fmt=" + _hdrOutput.Format + " held-borrow");
         return _hdrOutput;
     }
 
@@ -421,13 +458,48 @@ public static class DlssRuntime
     {
         var dest = _hdrOutput;
         _hdrOutput = null;
-        dest?.Release();
+        if (dest is HdrUavTarget held)
+            held.DisposeInner();
+        if (_hdrTexture != null)
+            MyManagers.CustomTextures.DisposeTex(ref _hdrTexture);
     }
 
     static void OnHdrOutputReleased(HdrUavTarget released)
     {
         if (ReferenceEquals(_hdrOutput, released))
             _hdrOutput = null;
+    }
+
+    /// <summary>
+    /// Output-sized Chromatic / FXAA dest. Keen always <c>Release</c>s it;
+    /// persist so the pool cannot recycle a 5K fp16 RT under Present.
+    /// </summary>
+    public static IBorrowedCustomTexture AcquirePostProcessDest()
+    {
+        var output = OutputResolution();
+        if (output.X <= 0 || output.Y <= 0)
+            return null;
+        if (_postProcessOutput != null &&
+            _postProcessOutput.Size.X == output.X &&
+            _postProcessOutput.Size.Y == output.Y)
+            return _postProcessOutput;
+
+        ReleasePostProcessDest();
+        _postProcessTexture = MyManagers.CustomTextures.CreateTexture(
+            "DLSS.PostProcess", output.X, output.Y);
+        if (_postProcessTexture == null)
+            return null;
+        _postProcessOutput = new PersistentLdrTarget(_postProcessTexture);
+        DebugLog.Write("PostProcess dest " + output.X + "x" + output.Y +
+                       " fmt=" + _postProcessOutput.Format + " persistent");
+        return _postProcessOutput;
+    }
+
+    public static void ReleasePostProcessDest()
+    {
+        _postProcessOutput = null;
+        if (_postProcessTexture != null)
+            MyManagers.CustomTextures.DisposeTex(ref _postProcessTexture);
     }
 
     /// <summary>
@@ -453,7 +525,7 @@ public static class DlssRuntime
         var dest = AcquireHdrOutput();
         if (dest == null)
         {
-            LastEvaluatePath = "HDR dest borrow failed";
+            LastEvaluatePath = "HDR dest failed";
             return false;
         }
 

@@ -1,0 +1,18 @@
+---
+description: Pack workarounds that other shaders will need belong in Anomaly, not as a one-off hack
+alwaysApply: true
+---
+
+# Anomaly owns shared rendering gaps
+
+When this pack needs a render capability the next Anomaly shader will also need, **file it on Anomaly** in the same turn (`Docs/Extensibility.md` Slice AI, `wiki/Framework-gaps.md`, shader-developer wiki canvas). Ship a temporary pack workaround only if the game must run today. Label it `// GAP: Slice AI — …`.
+
+Do **not** Harmony-patch Keen pass methods to invent HDR lighting, IsolatedMix energy, or march LOD in this repo.
+
+```text
+# BAD
+Guess an IsolatedMix multiply; read Keen frame_ fields as if they were stable.
+
+# GOOD
+Workaround + Anomaly extras/compose/helper destination. Append-only. Fail closed.
+```

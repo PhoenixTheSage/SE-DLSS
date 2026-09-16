@@ -26,9 +26,13 @@ internal static class BorrowCustomPatch
         if (output.X <= 0 || output.Y <= 0)
             return true;
 
-        // The name-only overload uses internal ResolutionI and would downsample the output-sized HDR result.
-        DebugLog.WriteFrame("BorrowCustom " + debugName + " at output " + output);
-        __result = __instance.BorrowCustom(debugName, output.X, output.Y, samplesCount, samplesQuality);
+        // Persist the output-sized dest. DrawGameScene Release()s Chromatic /
+        // FXAA every frame; a pooled 5120x1440 fp16 recycle under the GPU
+        // hung after the HDR dest was already made persistent.
+        __result = DlssRuntime.AcquirePostProcessDest();
+        if (__result == null)
+            return true;
+        DebugLog.WriteFrame("BorrowCustom " + debugName + " at output " + output + " persistent");
         return false;
     }
 }

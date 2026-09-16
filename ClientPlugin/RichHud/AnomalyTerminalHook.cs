@@ -19,6 +19,7 @@ internal static class AnomalyTerminalHook
 
     static readonly object Gate = new();
     static bool _installed;
+    static object _page;
 
     public static bool Installed
     {
@@ -41,6 +42,7 @@ internal static class AnomalyTerminalHook
                 return false;
 
             Populate(page);
+            _page = page;
             _installed = true;
             MyLog.Default.WriteLine("DLSS: Rich HUD page under Anomaly Shaders / " + FolderTitle + " / " + SettingsPage);
             DebugLog.Write("Anomaly TerminalConfigRegistry page " + PageTitle);
@@ -51,7 +53,20 @@ internal static class AnomalyTerminalHook
     public static void Reset()
     {
         lock (Gate)
+        {
             _installed = false;
+            _page = null;
+        }
+    }
+
+    public static void TryRefresh()
+    {
+        object page;
+        lock (Gate)
+            page = _page;
+        if (page == null)
+            return;
+        Invoke(page.GetType(), page, "Refresh");
     }
 
     static object RequestPageUnlocked()
@@ -109,7 +124,7 @@ internal static class AnomalyTerminalHook
         Invoke(type, page, "Dropdown", "Anti-aliasing", typeof(AntiAliasingChoice),
             (Func<object>)(() => RichHudOptions.GetAntiAliasing()),
             (Action<object>)(v => RichHudOptions.SetAntiAliasing((AntiAliasingChoice)v)),
-            "DLSS replaces FXAA; choose Off or FXAA to use the game's anti-aliasing.");
+            "Shared with Options → Graphics and FRS when that plugin is loaded. Only one upscaler can be selected.");
         Invoke(type, page, "Dropdown", "Mode", typeof(DlssMode),
             (Func<object>)(() => RichHudOptions.GetMode()),
             (Action<object>)(v => RichHudOptions.SetMode((DlssMode)v)),

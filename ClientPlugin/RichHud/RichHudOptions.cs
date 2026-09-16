@@ -8,12 +8,12 @@ namespace ClientPlugin.RichHud;
 /// </summary>
 internal static class RichHudOptions
 {
-    public static AntiAliasingChoice GetAntiAliasing() => Config.Current.AntiAliasing;
+    public static AntiAliasingChoice GetAntiAliasing() =>
+        GameAntiAliasing.DisplayedChoice(Config.Current.AntiAliasing);
 
     public static void SetAntiAliasing(AntiAliasingChoice value)
     {
-        Config.Current.AntiAliasing = value;
-        Save();
+        GameAntiAliasing.ApplyFromUi(value);
     }
 
     public static DlssMode GetMode() => Config.Current.Mode;

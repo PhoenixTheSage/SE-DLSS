@@ -1,0 +1,22 @@
+---
+description: Space Engineers DXGI DEVICE_REMOVED is a generic GPU-crash wrapper, not the root cause
+alwaysApply: true
+---
+
+# SE "device removed" is not the crash
+
+Space Engineers always reports a render failure as DXGI `DEVICE_REMOVED` (`0x887A0005`) at `MyRender11.Present()`. A GPU hang, TDR, or driver reset looks identical in the log. Keen then sets `IsGPU: True` and prints Aftermath (`Get Info fail` is common). That Present failure is the **wrapper**, not the fault.
+
+Do **not** treat "the device was removed" or "the GPU was unplugged" as the diagnosis. The driver already reset; SE has no other category for a dead device.
+
+```text
+# BAD
+HRESULT 0x887A0005 DXGI_ERROR_DEVICE_REMOVED at Present — the GPU/device was lost.
+
+# GOOD
+Present failed after a GPU/driver reset. Find the hang or invalid work in the
+frames before Present (Anomaly.debug.log, VRageRender-DirectX11_*.log, last
+Anomaly/pack/DLSS lines). Device-removed is how SE reports that reset.
+```
+
+Look at work queued **before** `Exception in render!`: last compiled/drawn Anomaly pass, pack fullscreen, DLSS evaluate, RTV+SRV hazards, unbounded shader loops, Inf/NaN motion vectors. Aftermath missing does not mean "not a GPU crash."

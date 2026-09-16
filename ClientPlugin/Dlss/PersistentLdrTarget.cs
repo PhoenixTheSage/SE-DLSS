@@ -42,9 +42,10 @@ internal sealed class PersistentLdrTarget : IBorrowedCustomTexture
 }
 
 /// <summary>
-/// Keen <c>CreateTexture</c> is always 8-bit UNORM. Display evaluate needs
-/// fp16 so DLSS / BT.2390 values above 1 are not clipped. <c>Release</c>
-/// returns the UAV to the pool — DrawGameScene always releases the dest.
+/// Fallback when <c>CreateTexture</c> is still 8-bit UNORM (HdrRender not
+/// live). Hold the borrowed fp16 UAV until resize/shutdown. Keen's
+/// <c>DrawGameScene</c> always <c>Release</c>s the dest — forwarding that
+/// to the pool recycled the UAV under NGX and hung the GPU.
 /// </summary>
 internal sealed class HdrUavTarget : IBorrowedCustomTexture
 {
@@ -60,6 +61,10 @@ internal sealed class HdrUavTarget : IBorrowedCustomTexture
     public void AddRef() => inner?.AddRef();
 
     public void Release()
+    {
+    }
+
+    public void DisposeInner()
     {
         var tex = inner;
         if (tex == null)

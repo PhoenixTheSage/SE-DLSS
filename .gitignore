@@ -369,3 +369,7 @@ MigrationBackup/
 Assets/nvngx_dlss.dll
 Assets/nvngx_dlssd.dll
 Assets/nvngx_dlssg.dll
+
+# Machine-local SE workstation notes (profile path, dying test GPU). Do not commit.
+.cursor/rules/se-profile-path.mdc
+.cursor/rules/se-test-gpu.mdc

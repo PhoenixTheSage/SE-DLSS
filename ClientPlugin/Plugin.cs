@@ -12,8 +12,8 @@ using VRage.Plugins;
 using VRage.Utils;
 
 #if !LOCAL_BUILD
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 #endif
 
 namespace ClientPlugin;
@@ -40,6 +40,7 @@ public sealed class Plugin : IPlugin
         DebugLog.Write("Init search=" + NgxHost.SearchPathSummary());
 
         GpuSupport.TryProbe();
+        GameAntiAliasing.CoerceUnsupported();
         AnomalyHook.Probe();
         AnomalyTerminalHook.TryInstall();
         if (GpuSupport.Probed && !GpuSupport.IsNvidia)
@@ -90,6 +91,7 @@ public sealed class Plugin : IPlugin
             return;
         // Pulsar finishes every plugin Init before the first Update. NGX D3D11
         // init must not overlap Anomaly (or other plugins) Harmony.PatchAll.
+        GameAntiAliasing.AlignWithPeer();
         AnomalyTerminalHook.TryInstall();
         ConfigStorage.FlushPending();
         DlssRuntime.NotifyPluginsReady();
@@ -104,6 +106,7 @@ public sealed class Plugin : IPlugin
 
         GpuSupport.TryProbe();
         GameAntiAliasing.AlignConfigWithGame();
+        GameAntiAliasing.AlignWithPeer();
         generator.SetLayout<Simple>();
         generator.Dialog.RecreateControls(true);
         MyGuiSandbox.AddScreen(generator.Dialog);

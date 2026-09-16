@@ -37,19 +37,13 @@ internal class DropdownAttribute(
         var dropdown = new MyGuiControlCombobox(openAreaItemsCount: VisibleRows, toolTip: Description);
         var elements = Enum.GetNames(choiceEnum);
 
-        for (var i = 0; i < elements.Length; i++)
-        {
-            if (choiceEnum == typeof(AntiAliasingChoice) &&
-                (AntiAliasingChoice)i == AntiAliasingChoice.DLSS &&
-                !GpuSupport.CanOfferDlss)
-                continue;
-            dropdown.AddItem(i, UnCamelCase(elements[i]));
-        }
-
         if (choiceEnum == typeof(AntiAliasingChoice))
-            GameAntiAliasing.BindPluginCombo(dropdown);
+            GameAntiAliasing.FillAndBindPluginCombo(dropdown);
         else
         {
+            for (var i = 0; i < elements.Length; i++)
+                dropdown.AddItem(i, UnCamelCase(elements[i]));
+
             void OnItemSelect()
             {
                 var key = dropdown.GetSelectedKey();

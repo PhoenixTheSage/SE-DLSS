@@ -13,7 +13,7 @@ Settings live in the Pulsar plugin dialog. When [Anomaly Shader Framework](https
 
 Plugin config or **Options → Graphics → Anti-aliasing**:
 
-- **Anti-aliasing** — Off, FXAA, or DLSS (shared with the game's graphics options; DLSS disables FXAA)
+- **Anti-aliasing** — Off, FXAA, DLSS, and FRS when [AMD FRS](https://github.com/PhoenixTheSage/SE-FRS) is loaded. Shared with **Options → Graphics** and with FRS (Pulsar + Rich HUD). Only one upscaler can be selected.
 - **Mode** — Quality, Balanced, Performance, Ultra Performance, or DLAA
 - **Model** — Latest (transformer K), J / K / L / M, or CNN F. NVIDIA App cannot override this unofficial title.
 - **Sharpness** — optional; transformer models may ignore it
@@ -53,7 +53,14 @@ The binary is served from the [`nvngx-dlss-310.7.0`](https://github.com/PhoenixT
 
 ## Known interactions
 
-These plugins patch the same render-thread surfaces. Prefer not enabling them together until a handshake exists.
+These plugins patch the same render-thread surfaces. DLSS and FRS handshake on anti-aliasing: each adds its option to the shared AA list (graphics, Pulsar, Rich HUD) and they keep one exclusive selection. If DLSS is stored but the GPU cannot offer it, the selection falls back (Off, or FRS when FRS is enabled) instead of staying stuck on DLSS.
+
+### FRS
+
+Overlap: anti-aliasing ownership and DRS. Well-known type `ClientPlugin.Dlss.AntiAliasingHandshake` / `ClientPlugin.Frs.AntiAliasingHandshake` (no compile-time reference). Graphics combo keys 100 (DLSS) and 101 (FRS).
+
+- **Safe now:** pick DLSS or FRS as the AA. Changing it in either plugin, Rich HUD, or Options → Graphics updates the other.
+- **Leftover DLSS:** unsupported NVIDIA/NGX still showing DLSS is coerced after GPU probe; enabling FRS selects FRS on the DLSS page too.
 
 ### HdrRender
 
