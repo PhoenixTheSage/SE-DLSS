@@ -132,6 +132,8 @@ internal static class GameAntiAliasing
         GpuSupport.TryProbe();
         if (Config.Current.AntiAliasing != AntiAliasingChoice.DLSS || GpuSupport.CanOfferDlss)
             return;
+        if (!ShouldPersistUnsupported())
+            return;
         SetChoice(AntiAliasingChoice.Off, applyGame: true, save: true);
     }
 
@@ -143,9 +145,9 @@ internal static class GameAntiAliasing
         var resolved = ResolveExclusive();
         var displayed = DisplayedChoice(Config.Current.AntiAliasing);
         if (displayed != resolved)
-            SetChoice(resolved, applyGame: true, save: true);
+            SetChoice(resolved, applyGame: true, save: ShouldSaveAlign(displayed, resolved));
         else if (Config.Current.AntiAliasing != resolved)
-            SetChoice(resolved, applyGame: false, save: true);
+            SetChoice(resolved, applyGame: false, save: ShouldSaveAlign(displayed, resolved));
         else if (!_suppressPeer)
             SyncPeer(resolved);
 
@@ -268,6 +270,19 @@ internal static class GameAntiAliasing
             ConfigStorage.Save(Config.Current);
         if (!_suppressPeer)
             SyncPeer(displayed);
+    }
+
+    private static bool ShouldPersistUnsupported()
+    {
+        return NgxHost.SupportKnown && !NgxHost.IsSupported && !NgxHost.LastFailureRecoverable;
+    }
+
+    private static bool ShouldSaveAlign(AntiAliasingChoice displayed, AntiAliasingChoice resolved)
+    {
+        if (displayed == AntiAliasingChoice.DLSS && resolved != AntiAliasingChoice.DLSS &&
+            !ShouldPersistUnsupported())
+            return false;
+        return true;
     }
 
     private static AntiAliasingChoice Sanitize(AntiAliasingChoice choice)

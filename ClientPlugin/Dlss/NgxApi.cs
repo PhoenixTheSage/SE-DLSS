@@ -60,6 +60,8 @@ internal static class NgxApi
     private static IntPtr _logPathNative;
 
     internal static string LastError { get; private set; } = "not initialized";
+    internal static NgxSupportVerdict LastVerdict { get; private set; } =
+        NgxSupportVerdict.Pending("not initialized");
     internal static bool IsInitialized => _initialized;
     internal static bool IsSupported => _supported;
     internal static bool HasFeature => _dlss != IntPtr.Zero;
@@ -67,6 +69,20 @@ internal static class NgxApi
     internal static void SetError(string text)
     {
         LastError = string.IsNullOrEmpty(text) ? "unknown error" : text;
+    }
+
+    static void FailInit(string text)
+    {
+        LastVerdict = NgxSupportVerdict.InitFailed(text);
+        SetError(LastVerdict.Message);
+    }
+
+    static bool TryGetInt(NgxParameter parameters, IntPtr name, out int value)
+    {
+        value = 0;
+        if (parameters == null)
+            return false;
+        return !NgxResult.Failed(parameters.Get(name, out value));
     }
 
     internal static bool Init(Device device, string dllSearchPath, string logPath)
@@ -77,7 +93,7 @@ internal static class NgxApi
                 return true;
             if (device == null || device.IsDisposed)
             {
-                SetError("Init requires a D3D11 device");
+                FailInit("Init requires a D3D11 device");
                 return false;
             }
 
@@ -86,7 +102,7 @@ internal static class NgxApi
             var driver = new NgxDriver();
             if (!driver.TryLoad(out var loadError))
             {
-                SetError(loadError);
+                FailInit(loadError);
                 DebugLog.Write(loadError);
                 driver.Dispose();
                 return false;
@@ -129,7 +145,7 @@ internal static class NgxApi
             }
             catch (Exception e)
             {
-                SetError("NGX D3D11 " + entry + " threw: " + e.GetType().Name + ": " + e.Message);
+                FailInit("NGX D3D11 " + entry + " threw: " + e.GetType().Name + ": " + e.Message);
                 DebugLog.Write(LastError);
                 FailInitCleanup(unloadDriver: !IsAccessViolation(e));
                 return false;
@@ -138,7 +154,7 @@ internal static class NgxApi
             if (NgxResult.Failed(result))
             {
                 if (result != NgxResult.FailAccessViolation)
-                    SetError("NVSDK_NGX_D3D11_" + entry + " failed (0x" + ((uint)result).ToString("X8") + ")");
+                    FailInit("NVSDK_NGX_D3D11_" + entry + " failed (0x" + ((uint)result).ToString("X8") + ")");
                 DebugLog.Write(LastError);
                 FailInitCleanup(unloadDriver: result != NgxResult.FailAccessViolation);
                 return false;
@@ -151,7 +167,9 @@ internal static class NgxApi
             result = _driver.GetCapabilityParameters(out var capsPtr);
             if (NgxResult.Failed(result) || capsPtr == IntPtr.Zero)
             {
-                SetError("GetCapabilityParameters failed");
+                LastVerdict = NgxSupportVerdict.CapabilityReadFailed();
+                SetError(LastVerdict.Message);
+                DebugLog.Write(LastError);
                 FailInitCleanup(shutdownNgx: true);
                 return false;
             }
@@ -162,20 +180,39 @@ internal static class NgxApi
                 evalPtr != IntPtr.Zero)
                 _evalParams = NgxParameter.FromNative(evalPtr);
 
-            _capabilityParams.Get(NgxNames.SuperSamplingAvailable, out int available);
-            _supported = available != 0;
-            _initialized = true;
-            if (_supported)
+            var availableOk = TryGetInt(_capabilityParams, NgxNames.SuperSamplingAvailable, out var available);
+            var needsDriverOk = TryGetInt(_capabilityParams, NgxNames.SuperSamplingNeedsUpdatedDriver,
+                out var needsDriver);
+            var minMajorOk = TryGetInt(_capabilityParams, NgxNames.SuperSamplingMinDriverVersionMajor,
+                out var minMajor);
+            var minMinorOk = TryGetInt(_capabilityParams, NgxNames.SuperSamplingMinDriverVersionMinor,
+                out var minMinor);
+            var featureInitOk = TryGetInt(_capabilityParams, NgxNames.SuperSamplingFeatureInitResult,
+                out var featureInit);
+            DebugLog.Write(
+                "caps available=" + available + " get=" + availableOk +
+                " needsDriver=" + needsDriver + " get=" + needsDriverOk +
+                " minDriver=" + minMajor + "." + minMinor + " get=" + (minMajorOk && minMinorOk) +
+                " featureInit=0x" + ((uint)featureInit).ToString("X8") + " get=" + featureInitOk);
+            LastVerdict = NgxSupport.ClassifyCaps(
+                availableOk, available,
+                needsDriverOk, needsDriver,
+                minMajorOk, minMajor,
+                minMinorOk, minMinor,
+                featureInitOk, featureInit);
+            SetError(LastVerdict.IsSupported
+                ? "initialized from " + _driver.LoadedFrom
+                : LastVerdict.Message);
+            DebugLog.Write("NGX SR " + LastVerdict.Kind + " " + LastError);
+
+            if (LastVerdict.Recoverable)
             {
-                SetError("initialized from " + _driver.LoadedFrom);
-                DebugLog.Write(LastError);
-            }
-            else
-            {
-                SetError("NGX initialized but Super Sampling is not available");
-                DebugLog.Write(LastError);
+                FailInitCleanup(shutdownNgx: true);
+                return false;
             }
 
+            _supported = LastVerdict.IsSupported;
+            _initialized = true;
             return true;
         }
     }
@@ -460,6 +497,7 @@ internal static class NgxApi
                 _lastEvalLog = null;
                 _loggedEvalInputs = false;
                 NgxLog.Clear();
+                LastVerdict = NgxSupportVerdict.Pending("shutdown");
                 SetError("shutdown");
             }
         }

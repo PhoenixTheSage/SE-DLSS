@@ -41,8 +41,33 @@ public static class Program
         Assert(VelocityAcceptance.ResetReason(false,false,true,false,false,true) == "camera-cut", "cut resets");
         Assert(VelocityAcceptance.ResetReason(true,false,false,false,false,false).Contains("invalid-history"), "resize resets");
         Assert(VelocityAcceptance.ResetReason(false,false,true,false,true,false) == "source-change", "source switch resets");
+        TestNgxSupportClassifier();
         Console.WriteLine("All consumer contract and reset tests passed. GPU/visual acceptance remains manual.");
     }
+    static void TestNgxSupportClassifier()
+    {
+        const int failDenied = unchecked((int)0xBAD00001);
+        var missing = NgxSupportVerdict.MissingDll();
+        Assert(!missing.SupportKnown && missing.Recoverable && !missing.IsSupported, "missing dll recoverable");
+        var getFailed = NgxSupport.ClassifyCaps(false, 0, false, 0, false, 0, false, 0, false, 0);
+        Assert(getFailed.Kind == NgxSupportKind.CapabilityReadFailed && getFailed.Recoverable && !getFailed.SupportKnown,
+            "available get failed is pending");
+        var driver = NgxSupport.ClassifyCaps(false, 0, true, 1, true, 572, true, 16, false, 0);
+        Assert(driver.Kind == NgxSupportKind.NeedsUpdatedDriver && driver.SupportKnown && !driver.Recoverable,
+            "needs driver wins over failed available get");
+        Assert(driver.Message.Contains("572.16"), "min driver version in message");
+        var denied = NgxSupport.ClassifyCaps(true, 0, true, 0, false, 0, false, 0, true, failDenied);
+        Assert(denied.Kind == NgxSupportKind.FeatureDenied && denied.SupportKnown && !denied.Recoverable,
+            "feature init denied is hard");
+        var unavailable = NgxSupport.ClassifyCaps(true, 0, true, 0, false, 0, false, 0, true, 1);
+        Assert(unavailable.Kind == NgxSupportKind.SuperSamplingUnavailable && unavailable.SupportKnown && !unavailable.Recoverable,
+            "available 0 with dll present is hard");
+        var ok = NgxSupport.ClassifyCaps(true, 1, true, 0, false, 0, false, 0, false, 0);
+        Assert(ok.Kind == NgxSupportKind.Available && ok.IsSupported && ok.SupportKnown && !ok.Recoverable,
+            "available 1 is supported");
+        Assert(NgxSupport.IsNgxFail(failDenied) && !NgxSupport.IsNgxFail(1), "ngx fail helper");
+    }
+
     static bool Read(out IntPtr p) => AnomalyHook.TryGetLive(1280,720,out p,out _);
     static void Set(string name, object value) => typeof(AnomalyHook).GetField(name, BindingFlags.NonPublic|BindingFlags.Static).SetValue(null,value);
     static void Assert(bool ok,string name) { if (!ok) throw new Exception(name); Console.WriteLine("PASS " + name); }
@@ -65,7 +90,12 @@ public class ProbeConfig
 namespace ClientPlugin.Dlss
 {
     public static class DebugLog { public static void Write(string s) {} }
-    public static class DlssRuntime { public static string LastBindingEvidence; public static int InternalWidth=1280, InternalHeight=720; }
+    public static class DlssRuntime
+    {
+        public static string LastBindingEvidence;
+        public static int InternalWidth = 1280, InternalHeight = 720;
+        public static bool IsLive;
+    }
 }
 namespace VRage.Utils
 {

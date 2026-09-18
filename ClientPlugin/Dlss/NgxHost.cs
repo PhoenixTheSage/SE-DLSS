@@ -11,10 +11,13 @@ namespace ClientPlugin.Dlss;
 
 public static class NgxHost
 {
+    public const string DlssDllFileName = "nvngx_dlss.dll";
+
     public static bool IsLoaded { get; private set; }
     public static bool IsSupported { get; private set; }
     public static bool IsReady { get; private set; }
     public static bool SupportKnown { get; private set; }
+    public static bool LastFailureRecoverable { get; private set; }
     public static string LastError { get; internal set; } = "not initialized";
     public static int CurrentPresetHint =>
         ToNgxPreset(Config.Current != null ? Config.Current.Model : DlssModel.LatestModel);
@@ -25,6 +28,8 @@ public static class NgxHost
     private static Device _deviceOwner;
     private static bool _initBlocked;
     private static bool _gpuRejected;
+    private static bool _retryRequested;
+    private static bool _loggedMissingDll;
     private static uint _lastOutW;
     private static uint _lastOutH;
     private static int _lastQuality = int.MinValue;
@@ -41,8 +46,13 @@ public static class NgxHost
         {
             SearchPaths.Add(path);
             DebugLog.Write("search path " + path);
-            if (!IsLoaded && !_gpuRejected)
-                _initBlocked = false;
+        }
+
+        _loggedMissingDll = false;
+        if (!_gpuRejected && (LastFailureRecoverable || !SupportKnown) && HasDlssRedist)
+        {
+            _initBlocked = false;
+            _retryRequested = true;
         }
     }
 
@@ -64,10 +74,20 @@ public static class NgxHost
 
         foreach (var path in SearchPaths)
             sb.Append(indent).AppendLine(path);
+
+        var dllDir = FindDlssDllDirectory();
+        if (dllDir != null)
+            sb.Append(indent).Append(DlssDllFileName).Append(' ').AppendLine(Path.Combine(dllDir, DlssDllFileName));
+        else
+            sb.Append(indent).Append(DlssDllFileName).AppendLine(" missing");
     }
+
+    public static bool HasDlssRedist => FindDlssDllDirectory() != null;
 
     public static bool TryInit(Device device, string logPath)
     {
+        if (_retryRequested)
+            TeardownForRetry();
         if (IsLoaded)
             return IsSupported;
         if (_initBlocked)
@@ -75,6 +95,7 @@ public static class NgxHost
         if (device == null || device.IsDisposed)
         {
             LastError = "D3D11 device is not ready";
+            LastFailureRecoverable = true;
             DebugLog.Write("TryInit: " + LastError);
             return false;
         }
@@ -84,6 +105,7 @@ public static class NgxHost
         {
             LastError = GpuSupport.UnsupportedReason;
             SupportKnown = true;
+            LastFailureRecoverable = false;
             _gpuRejected = true;
             _initBlocked = true;
             IsSupported = false;
@@ -94,10 +116,28 @@ public static class NgxHost
         if (!GpuSupport.CanAttemptDlss)
         {
             LastError = GpuSupport.UnsupportedReason;
+            LastFailureRecoverable = true;
             return false;
         }
 
         var searchPath = FindDlssDllDirectory();
+        if (string.IsNullOrEmpty(searchPath))
+        {
+            var missing = NgxSupportVerdict.MissingDll();
+            LastError = missing.Message;
+            LastFailureRecoverable = true;
+            SupportKnown = false;
+            IsSupported = false;
+            if (!_loggedMissingDll)
+            {
+                _loggedMissingDll = true;
+                DebugLog.Write("TryInit: " + LastError);
+            }
+
+            return false;
+        }
+
+        NgxDriver.TryPreloadDlss(searchPath);
         var log = string.IsNullOrEmpty(logPath) ? searchPath : logPath;
         DebugLog.Write("NGX Init dllSearch=" + searchPath + " log=" + log);
         try
@@ -105,17 +145,20 @@ public static class NgxHost
             if (!NgxApi.Init(device, searchPath, log))
             {
                 LastError = NgxApi.LastError;
-                MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
-                DebugLog.Write("NGX Init failed: " + LastError);
-                _initBlocked = true;
-                SupportKnown = true;
+                LastFailureRecoverable = NgxApi.LastVerdict.Recoverable;
+                SupportKnown = NgxApi.LastVerdict.SupportKnown;
                 IsSupported = false;
+                if (!LastFailureRecoverable)
+                    _initBlocked = true;
+                MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
+                DebugLog.Write("NGX Init failed recoverable=" + LastFailureRecoverable + " " + LastError);
                 return false;
             }
         }
         catch (Exception e)
         {
             LastError = "NGX init threw: " + e.GetType().Name + ": " + e.Message;
+            LastFailureRecoverable = false;
             MyLog.Default.Error("DLSS: " + LastError);
             DebugLog.Write(LastError);
             _initBlocked = true;
@@ -130,6 +173,7 @@ public static class NgxHost
         _ngxTornDown = false;
         IsSupported = NgxApi.IsSupported;
         SupportKnown = true;
+        LastFailureRecoverable = false;
         LastError = NgxApi.LastError;
         if (!IsSupported)
         {
@@ -266,6 +310,14 @@ public static class NgxHost
         if (_gpuRejected)
             return;
         _initBlocked = false;
+        if (LastFailureRecoverable || !SupportKnown)
+        {
+            SupportKnown = false;
+            if (IsLoaded || NgxApi.IsInitialized)
+                _retryRequested = true;
+            return;
+        }
+
         SupportKnown = IsLoaded;
     }
 
@@ -319,8 +371,11 @@ public static class NgxHost
         IsSupported = false;
         IsReady = false;
         SupportKnown = false;
+        LastFailureRecoverable = false;
         _initBlocked = false;
         _gpuRejected = false;
+        _retryRequested = false;
+        _loggedMissingDll = false;
         _lastOutW = 0;
         _lastOutH = 0;
         _lastQuality = int.MinValue;
@@ -368,11 +423,45 @@ public static class NgxHost
         }
     }
 
+    private static void TeardownForRetry()
+    {
+        _retryRequested = false;
+        if (_gpuRejected)
+            return;
+        DebugLog.Write("NgxHost retry teardown loaded=" + IsLoaded + " initialized=" + NgxApi.IsInitialized);
+        if (NgxApi.IsInitialized)
+        {
+            try
+            {
+                NgxApi.Shutdown();
+            }
+            catch (Exception e)
+            {
+                DebugLog.Write("retry Shutdown: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
+        IsLoaded = false;
+        IsSupported = false;
+        IsReady = false;
+        SupportKnown = false;
+        _initBlocked = false;
+        _ngxTornDown = false;
+        _device = IntPtr.Zero;
+        _deviceOwner = null;
+        _lastOutW = 0;
+        _lastOutH = 0;
+        _lastQuality = int.MinValue;
+        _lastPreset = int.MinValue;
+        _lastHdr = false;
+        LastError = "retry";
+    }
+
     private static string FindDlssDllDirectory()
     {
         foreach (var path in SearchPaths)
-            if (File.Exists(Path.Combine(path, "nvngx_dlss.dll")))
+            if (File.Exists(Path.Combine(path, DlssDllFileName)))
                 return path;
-        return SearchPaths.Count > 0 ? SearchPaths[0] : Environment.CurrentDirectory;
+        return null;
     }
 }

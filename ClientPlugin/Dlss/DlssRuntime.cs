@@ -124,6 +124,28 @@ public static class DlssRuntime
         DebugLog.Write("plugins ready; NGX init allowed");
     }
 
+    public static void TryWarmProbe()
+    {
+        if (!_pluginsReady || NgxHost.SupportKnown)
+            return;
+        GpuSupport.TryProbe();
+        if (!GpuSupport.CanAttemptDlss)
+            return;
+        if (!NgxHost.HasDlssRedist)
+            return;
+        var device = MyRender11.DeviceInstance;
+        if (device == null || device.IsDisposed)
+            return;
+        try
+        {
+            NgxHost.TryInit(device, MyFileLogPath());
+        }
+        catch (Exception e)
+        {
+            DebugLog.Write("TryWarmProbe: " + e.GetType().Name + ": " + e.Message);
+        }
+    }
+
     public static void NotifyConfigChanged()
     {
         _configChanged = true;
@@ -651,7 +673,7 @@ public static class DlssRuntime
 
         try
         {
-            if (!NgxHost.IsLoaded && !NgxHost.TryInit(device, MyFileLogPath()))
+            if (!NgxHost.TryInit(device, MyFileLogPath()))
                 return false;
         }
         catch (Exception e)

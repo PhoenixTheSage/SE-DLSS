@@ -6,8 +6,8 @@ Settings live in the Pulsar plugin dialog. When [Anomaly Shader Framework](https
 
 ## Requirements
 
-- Space Engineers with [Pulsar](https://github.com/SpaceGT/Pulsar) 2.4.0 or later, Windows, NVIDIA RTX, current Game Ready driver
-- Pulsar downloads NVIDIA's `nvngx_dlss.dll` (SDK 310.7.0) from this repo's GitHub release and places it next to the plugin DLL. For a local build, put the same file in `Assets/` (gitignored) or next to the plugin DLL in Pulsar's `Local` folder.
+- Space Engineers with [Pulsar](https://github.com/SpaceGT/Pulsar) 2.4.0 or later, Windows, NVIDIA RTX, current **Game Ready** driver (laptop OEM branches are often too old for SDK 310.7.0)
+- Pulsar downloads NVIDIA's `nvngx_dlss.dll` (SDK 310.7.0) from this repo's GitHub release and places it next to the plugin DLL. On first launch that download can finish after the plugin starts; Show Status reports **eligible pending** until NGX Super Sampling is probed. For a local build, put the same file in `Assets/` (gitignored) or next to the plugin DLL in Pulsar's `Local` folder.
 
 ## Settings
 
@@ -35,6 +35,10 @@ Optional [Rich HUD Master](https://steamcommunity.com/workshop/filedetails/?id=1
 ## Driver / NGX
 
 This plugin does not use NVIDIA's public NGX SDK shim. It loads the driver's private `_nvngx.dll` from System32, the `NGXCore` registry path, or DriverStore `nv*` folders, and calls private exports through an OleAut32 `DispCallFunc` trampoline so the driver sees a native return address.
+
+NGX init stays on the render thread and does not run until `nvngx_dlss.dll` is on a search path. A missing redist is recoverable: Pulsar `LoadAssets` retries the probe. An outdated driver or NGX `FeatureInitResult` denial is a session-hard miss and is reported as such, not as “this GPU cannot do DLSS.”
+
+NGX may log that `nvngx_fgx.dll` is missing. That is Frame Generation, which 30-series GPUs do not support and this plugin does not load.
 
 The code fails closed on NGX error codes and defaults to off. A native access violation during init cannot be caught from .NET Framework and will take the game down.
 
@@ -90,6 +94,6 @@ Overlap: render-thread camera interpolation plus this plugin's jitter on `DrawGa
 
 ## Bug reports
 
-Open an issue with **Show Status** text, GPU, driver version, and `SpaceEngineers.log`.
+Open an issue with **Show Status** text, GPU, driver version, `SpaceEngineers.log`, and `SpaceEngineersDLSS.debug.log` (search for `Init search=`, `available=`, `NeedsUpdatedDriver=`).
 
 Anomaly consumer verification and in-game acceptance procedure: [Tests/ANOMALY-ACCEPTANCE.md](Tests/ANOMALY-ACCEPTANCE.md). Numerical reprojection and ghosting acceptance remain pending in-game captures.

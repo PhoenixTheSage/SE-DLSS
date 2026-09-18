@@ -28,7 +28,7 @@ public static class DlssStatus
     static void AppendGpu(StringBuilder sb)
     {
         sb.Append("GPU  ").Append(GpuSupport.StatusLine);
-        sb.Append(" · eligible ").AppendLine(Yes(GpuSupport.CanOfferDlss));
+        sb.Append(" · eligible ").AppendLine(GpuSupport.EligibilityLabel);
     }
 
     static void AppendNgx(StringBuilder sb)
@@ -43,14 +43,14 @@ public static class DlssStatus
         else
             sb.Append("not loaded");
         sb.Append(" · ").Append(NgxHost.FeatureIsHdr ? "IsHDR" : "SDR");
-        sb.AppendLine(" · oleaut-6");
+        sb.AppendLine(" · init oleaut-6");
 
         var err = NgxHost.LastError;
         if (!string.IsNullOrEmpty(err) && !(NgxHost.IsReady && err == "not initialized"))
             sb.Append("     ").AppendLine(err);
 
         if (NgxLog.HasMessages)
-            sb.Append("     log ").AppendLine(NgxLog.LastLine);
+            sb.Append("     log ").AppendLine(NgxLog.LastLines(3));
     }
 
     static void AppendConfig(StringBuilder sb)

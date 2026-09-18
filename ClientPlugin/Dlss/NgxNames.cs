@@ -32,6 +32,10 @@ internal static class NgxNames
     internal static readonly IntPtr RenderSubrectWidth = Alloc("DLSS.Render.Subrect.Dimensions.Width");
     internal static readonly IntPtr RenderSubrectHeight = Alloc("DLSS.Render.Subrect.Dimensions.Height");
     internal static readonly IntPtr SuperSamplingAvailable = Alloc("SuperSampling.Available");
+    internal static readonly IntPtr SuperSamplingNeedsUpdatedDriver = Alloc("SuperSampling.NeedsUpdatedDriver");
+    internal static readonly IntPtr SuperSamplingMinDriverVersionMajor = Alloc("SuperSampling.MinDriverVersionMajor");
+    internal static readonly IntPtr SuperSamplingMinDriverVersionMinor = Alloc("SuperSampling.MinDriverVersionMinor");
+    internal static readonly IntPtr SuperSamplingFeatureInitResult = Alloc("SuperSampling.FeatureInitResult");
     internal static readonly IntPtr PresetDlaa = Alloc("DLSS.Hint.Render.Preset.DLAA");
     internal static readonly IntPtr PresetQuality = Alloc("DLSS.Hint.Render.Preset.Quality");
     internal static readonly IntPtr PresetBalanced = Alloc("DLSS.Hint.Render.Preset.Balanced");

@@ -34,6 +34,25 @@ public static class GpuSupport
         }
     }
 
+    /// <summary>
+    /// Status label: pending until NGX Super Sampling is probed, then yes/no.
+    /// Combo visibility uses <see cref="CanOfferDlss"/>, which stays open while pending.
+    /// </summary>
+    public static string EligibilityLabel
+    {
+        get
+        {
+            TryProbe();
+            if (!Probed)
+                return "pending";
+            if (!IsNvidia)
+                return "no";
+            if (!NgxHost.SupportKnown)
+                return "pending";
+            return NgxHost.IsSupported ? "yes" : "no";
+        }
+    }
+
     public static string UnsupportedReason
     {
         get
@@ -52,7 +71,11 @@ public static class GpuSupport
         {
             if (!Probed)
                 return "not detected yet";
-            return VendorName + " " + AdapterName + " (0x" + VendorId.ToString("X4") + ")";
+            var gpu = AdapterName;
+            if (string.IsNullOrEmpty(gpu) ||
+                !gpu.StartsWith(VendorName, StringComparison.OrdinalIgnoreCase))
+                gpu = VendorName + " " + AdapterName;
+            return gpu + " (0x" + VendorId.ToString("X4") + ")";
         }
     }
 
