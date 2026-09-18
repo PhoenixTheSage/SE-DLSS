@@ -126,13 +126,20 @@ public static class DlssRuntime
 
     public static void TryWarmProbe()
     {
-        if (!_pluginsReady || NgxHost.SupportKnown)
+        if (!_pluginsReady || !NgxHost.ShouldWarmProbe)
             return;
         GpuSupport.TryProbe();
         if (!GpuSupport.CanAttemptDlss)
+        {
+            if (GpuSupport.Probed)
+                NgxHost.MarkInitAttempted();
             return;
+        }
         if (!NgxHost.HasDlssRedist)
+        {
+            NgxHost.NoteMissingRedist();
             return;
+        }
         var device = MyRender11.DeviceInstance;
         if (device == null || device.IsDisposed)
             return;
@@ -673,7 +680,7 @@ public static class DlssRuntime
 
         try
         {
-            if (!NgxHost.TryInit(device, MyFileLogPath()))
+            if (NgxHost.NeedsInit && !NgxHost.TryInit(device, MyFileLogPath()))
                 return false;
         }
         catch (Exception e)

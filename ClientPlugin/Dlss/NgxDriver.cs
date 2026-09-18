@@ -196,20 +196,26 @@ internal sealed class NgxDriver : IDisposable
         return ptr == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer<T>(ptr);
     }
 
+    private static string[] _candidates;
+
     private static IEnumerable<string> EnumerateCandidates()
     {
+        if (_candidates != null)
+            return _candidates;
+
+        var list = new List<string>();
         var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
         if (!string.IsNullOrEmpty(sys))
         {
-            yield return Path.Combine(sys, "_nvngx.dll");
-            yield return Path.Combine(sys, "nvngx.dll");
+            list.Add(Path.Combine(sys, "_nvngx.dll"));
+            list.Add(Path.Combine(sys, "nvngx.dll"));
         }
 
         var ngxCore = ReadNgxCoreDir();
         if (!string.IsNullOrEmpty(ngxCore))
         {
-            yield return Path.Combine(ngxCore, "_nvngx.dll");
-            yield return Path.Combine(ngxCore, "nvngx.dll");
+            list.Add(Path.Combine(ngxCore, "_nvngx.dll"));
+            list.Add(Path.Combine(ngxCore, "nvngx.dll"));
         }
 
         if (!string.IsNullOrEmpty(sys))
@@ -228,12 +234,14 @@ internal sealed class NgxDriver : IDisposable
                 }
 
                 foreach (var dir in dirs)
-                    yield return Path.Combine(dir, "_nvngx.dll");
+                    list.Add(Path.Combine(dir, "_nvngx.dll"));
             }
         }
 
-        yield return "_nvngx.dll";
-        yield return "nvngx.dll";
+        list.Add("_nvngx.dll");
+        list.Add("nvngx.dll");
+        _candidates = list.ToArray();
+        return _candidates;
     }
 
     private static IntPtr TryLoadModule(string path)

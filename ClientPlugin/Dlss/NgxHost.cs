@@ -29,7 +29,10 @@ public static class NgxHost
     private static bool _initBlocked;
     private static bool _gpuRejected;
     private static bool _retryRequested;
+    private static bool _initAttempted;
     private static bool _loggedMissingDll;
+    private static string _cachedDllDir;
+    private static bool _dllDirResolved;
     private static uint _lastOutW;
     private static uint _lastOutH;
     private static int _lastQuality = int.MinValue;
@@ -48,7 +51,7 @@ public static class NgxHost
             DebugLog.Write("search path " + path);
         }
 
-        _loggedMissingDll = false;
+        InvalidateRedistCache();
         if (!_gpuRejected && (LastFailureRecoverable || !SupportKnown) && HasDlssRedist)
         {
             _initBlocked = false;
@@ -84,6 +87,35 @@ public static class NgxHost
 
     public static bool HasDlssRedist => FindDlssDllDirectory() != null;
 
+    /// <summary>
+    /// Cheap Draw gate. After one probe (or a missing-redist note) this stays
+    /// false until <see cref="AddSearchPath"/> or a teardown retry is requested.
+    /// </summary>
+    public static bool ShouldWarmProbe =>
+        !_gpuRejected && !SupportKnown && (_retryRequested || !_initAttempted);
+
+    public static bool NeedsInit => !IsLoaded || _retryRequested;
+
+    public static void NoteMissingRedist()
+    {
+        var missing = NgxSupportVerdict.MissingDll();
+        LastError = missing.Message;
+        LastFailureRecoverable = true;
+        SupportKnown = false;
+        IsSupported = false;
+        _initAttempted = true;
+        if (!_loggedMissingDll)
+        {
+            _loggedMissingDll = true;
+            DebugLog.Write("TryInit: " + LastError);
+        }
+    }
+
+    public static void MarkInitAttempted()
+    {
+        _initAttempted = true;
+    }
+
     public static bool TryInit(Device device, string logPath)
     {
         if (_retryRequested)
@@ -91,6 +123,8 @@ public static class NgxHost
         if (IsLoaded)
             return IsSupported;
         if (_initBlocked)
+            return false;
+        if (_initAttempted && !_retryRequested)
             return false;
         if (device == null || device.IsDisposed)
         {
@@ -108,6 +142,7 @@ public static class NgxHost
             LastFailureRecoverable = false;
             _gpuRejected = true;
             _initBlocked = true;
+            _initAttempted = true;
             IsSupported = false;
             DebugLog.Write("TryInit blocked: " + LastError);
             return false;
@@ -123,17 +158,7 @@ public static class NgxHost
         var searchPath = FindDlssDllDirectory();
         if (string.IsNullOrEmpty(searchPath))
         {
-            var missing = NgxSupportVerdict.MissingDll();
-            LastError = missing.Message;
-            LastFailureRecoverable = true;
-            SupportKnown = false;
-            IsSupported = false;
-            if (!_loggedMissingDll)
-            {
-                _loggedMissingDll = true;
-                DebugLog.Write("TryInit: " + LastError);
-            }
-
+            NoteMissingRedist();
             return false;
         }
 
@@ -150,6 +175,7 @@ public static class NgxHost
                 IsSupported = false;
                 if (!LastFailureRecoverable)
                     _initBlocked = true;
+                _initAttempted = true;
                 MyLog.Default.Warning("DLSS: NGX init failed: " + LastError);
                 DebugLog.Write("NGX Init failed recoverable=" + LastFailureRecoverable + " " + LastError);
                 return false;
@@ -162,6 +188,7 @@ public static class NgxHost
             MyLog.Default.Error("DLSS: " + LastError);
             DebugLog.Write(LastError);
             _initBlocked = true;
+            _initAttempted = true;
             SupportKnown = true;
             IsSupported = false;
             return false;
@@ -174,6 +201,7 @@ public static class NgxHost
         IsSupported = NgxApi.IsSupported;
         SupportKnown = true;
         LastFailureRecoverable = false;
+        _initAttempted = true;
         LastError = NgxApi.LastError;
         if (!IsSupported)
         {
@@ -375,7 +403,9 @@ public static class NgxHost
         _initBlocked = false;
         _gpuRejected = false;
         _retryRequested = false;
+        _initAttempted = false;
         _loggedMissingDll = false;
+        InvalidateRedistCache();
         _lastOutW = 0;
         _lastOutH = 0;
         _lastQuality = int.MinValue;
@@ -426,6 +456,7 @@ public static class NgxHost
     private static void TeardownForRetry()
     {
         _retryRequested = false;
+        _initAttempted = false;
         if (_gpuRejected)
             return;
         DebugLog.Write("NgxHost retry teardown loaded=" + IsLoaded + " initialized=" + NgxApi.IsInitialized);
@@ -457,11 +488,29 @@ public static class NgxHost
         LastError = "retry";
     }
 
+    private static void InvalidateRedistCache()
+    {
+        _dllDirResolved = false;
+        _cachedDllDir = null;
+        _loggedMissingDll = false;
+    }
+
     private static string FindDlssDllDirectory()
     {
+        if (_dllDirResolved)
+            return _cachedDllDir;
+        string found = null;
         foreach (var path in SearchPaths)
+        {
             if (File.Exists(Path.Combine(path, DlssDllFileName)))
-                return path;
-        return null;
+            {
+                found = path;
+                break;
+            }
+        }
+
+        _cachedDllDir = found;
+        _dllDirResolved = true;
+        return found;
     }
 }

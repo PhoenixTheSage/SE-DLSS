@@ -27,7 +27,7 @@ internal static class DrawPatch
                     DlssRuntime.RestoreViewportToOutput();
                 }
             }
-            else
+            else if (NgxHost.ShouldWarmProbe)
                 DlssRuntime.TryWarmProbe();
             AnomalyHook.SyncUpscaleClaim();
         }
